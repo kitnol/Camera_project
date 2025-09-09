@@ -188,7 +188,7 @@ static camera_config_t camera_config = {
     .pixel_format = PIXFORMAT_JPEG,
     .frame_size = FRAMESIZE_5MP,        // Reduced from UXGA (800x600 instead of 1600x1200)
     .jpeg_quality = 10,                 // Lower quality to reduce memory usage
-    .fb_count = 3,                      // Single frame buffer without PSRAM
+    .fb_count = 1,                      // Single frame buffer without PSRAM
     .fb_location = CAMERA_FB_IN_PSRAM,  // Use DRAM instead of PSRAM
     .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
 }; 
@@ -382,214 +382,6 @@ esp_err_t deinit_sdcard(void)
     return ret;
 }
 
-/* Take pictures command handler + */
-static struct {
-    struct arg_str *val;
-    struct arg_end *end;
-} take_args;
-
-static int take_command_handler(int argc, char **argv)
-{
-    int nerrors = arg_parse(argc, argv, (void **) &take_args);
-    if (nerrors != 0) {
-        arg_print_errors(stderr, take_args.end, argv[0]);
-        return 1;
-    }
-
-    // Custom parsing to handle negative numbers
-    const char *val_str = take_args.val->sval[0];
-    char *endptr;
-    int val = strtod(val_str, &endptr);
-
-    if (taken != false)
-    {
-        esp_camera_fb_return(fbsave);
-    }
-    else{
-        taken = true;
-    }
-
-    char filename[32];
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (fb == NULL) {
-        ESP_LOGE(TAG, "Camera capture failed 2");
-        return 0;
-    }
-    if (!fb) {
-        ESP_LOGE(TAG, "Camera capture failed");
-        vTaskDelay(pdMS_TO_TICKS(1000));
-        return 0;
-    }
-    
-    int len = sizeof(fb);
-    // printf(fb->buf);
-    // for(int i = 0; i < len; i++)
-    // {
-    //     printf("%d\n", fb->buf[i]);
-    // }
-
-    ESP_LOGI(TAG, "Picture taken! Size: %d bytes", fb->len);
-
-    snprintf(filename, sizeof(filename), "image%03d.jpg", val);
-
-    esp_err_t ret = save_image_to_sd(fb, filename);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to save image");
-    }
-
-    fbsave = fb;
-
-    return 0;
-}
-
-static void register_take_command(void)
-{
-    take_args.val = arg_str1(NULL, NULL, "<num>", "take value");
-    take_args.end = arg_end(3);
-
-    const esp_console_cmd_t take_cmd = {
-        .command = "take",
-        .help = "Take picture",
-        .hint = NULL,
-        .func = &take_command_handler,
-        .argtable = &take_args
-    };
-
-    ESP_ERROR_CHECK(esp_console_cmd_register(&take_cmd));
-}
-
-/* Camera init command + */
-static int cinit_command_handler(int argc, char **argv)
-{
-    if (argc < 1) {
-        printf("Usage: cinit\n");
-        return 1;
-    }
-
-    esp_err_t ret = init_camera();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Camera initialization failed");
-        return 1;
-    }
-
-    printf("Camera initialised");
-    printf("\n");
-
-    return 0;
-}
-
-static void register_cinit_command(void)
-{
-    const esp_console_cmd_t cinit_cmd = {
-        .command = "cinit",
-        .help = "Camera initialising command",
-        .hint = NULL,
-        .func = &cinit_command_handler,
-        .argtable = NULL
-    };
-
-    ESP_ERROR_CHECK(esp_console_cmd_register(&cinit_cmd));
-}
-
-/* Camera deinit command + */
-static int cdeinit_command_handler(int argc, char **argv)
-{
-    if (argc < 1) {
-        printf("Usage: cdeinit\n");
-        return 1;
-    }
-
-    esp_err_t ret = deinit_camera();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Camera deinitialization failed");
-        return 1;
-    }
-
-    printf("Camera deinitialised");
-    printf("\n");
-
-    return 0;
-}
-
-static void register_cdeinit_command(void)
-{
-    const esp_console_cmd_t cdeinit_cmd = {
-        .command = "cdeinit",
-        .help = "Camera deinitialising command",
-        .hint = NULL,
-        .func = &cdeinit_command_handler,
-        .argtable = NULL
-    };
-
-    ESP_ERROR_CHECK(esp_console_cmd_register(&cdeinit_cmd));
-}
-
-/* SD init command + */
-static int sdinit_command_handler(int argc, char **argv)
-{
-    if (argc < 1) {
-        printf("Usage: sdinit\n");
-        return 1;
-    }
-
-    esp_err_t ret = init_sdcard();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SD card initialization failed");
-        return 1;
-    }
-
-    printf("SD card initialised");
-    printf("\n");
-
-    return 0;
-}
-
-static void register_sdinit_command(void)
-{
-    const esp_console_cmd_t sdinit_cmd = {
-        .command = "sdinit",
-        .help = "SD card initialising command",
-        .hint = NULL,
-        .func = &sdinit_command_handler,
-        .argtable = NULL
-    };
-
-    ESP_ERROR_CHECK(esp_console_cmd_register(&sdinit_cmd));
-}
-
-/* SD deinit command + */
-static int sddeinit_command_handler(int argc, char **argv)
-{
-    if (argc < 1) {
-        printf("Usage: sddeinit\n");
-        return 1;
-    }
-
-    esp_err_t ret = deinit_sdcard();
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "SD card initialization failed");
-        return 1;
-    }
-
-    printf("SD card deinitialised");
-    printf("\n");
-
-    return 0;
-}
-
-static void register_sddeinit_command(void)
-{
-    const esp_console_cmd_t sddeinit_cmd = {
-        .command = "sddeinit",
-        .help = "SD card deinitialising command",
-        .hint = NULL,
-        .func = &sddeinit_command_handler,
-        .argtable = NULL
-    };
-
-    ESP_ERROR_CHECK(esp_console_cmd_register(&sddeinit_cmd));
-}
-
 
 void app_main(void)
 {
@@ -618,10 +410,6 @@ void app_main(void)
 
         // Taking picture
         camera_fb_t *fb = esp_camera_fb_get();
-        esp_camera_fb_return(fb);
-        fb = esp_camera_fb_get();
-        esp_camera_fb_return(fb);
-        fb = esp_camera_fb_get();
         if (!fb || fb == NULL) {
             ESP_LOGE(TAG, "Camera capture failed");
             vTaskDelay(pdMS_TO_TICKS(5000));
@@ -630,24 +418,26 @@ void app_main(void)
         }
         else{
             ESP_LOGI(TAG, "Picture taken! Size: %d bytes", fb->len);
-            ret = ESP_OK;
             // Save to SD card
+            ret = ESP_OK;
             snprintf(filename, sizeof(filename), "image%03d.jpg", image_count++);
             ret = save_image_to_sd(fb, filename);
             if (ret != ESP_OK) {
                 ESP_LOGE(TAG, "Failed to save image");
             }
+            esp_camera_fb_return(fb);
+            
+            // Camera deinit
+            ret = deinit_camera();
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Camera deinitialization failed");
+                continue;
+            }
+            else{
+                ESP_LOGI(TAG, "Camera deinitialized");
+            }
         }
 
-        // Camera deinit
-        ret = deinit_camera();
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Camera deinitialization failed");
-            continue;
-        }
-        else{
-            ESP_LOGI(TAG, "Camera deinitialized");
-        }
         
         //SD deinit
         ret = deinit_sdcard();

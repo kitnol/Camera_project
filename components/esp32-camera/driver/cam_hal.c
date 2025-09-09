@@ -474,48 +474,91 @@ void cam_start(void)
     ll_cam_vsync_intr_enable(cam_obj, true);
 }
 
+// camera_fb_t *cam_take(TickType_t timeout)
+// {
+//     camera_fb_t *dma_buffer = NULL;
+//     TickType_t start = xTaskGetTickCount();
+//     xQueueReceive(cam_obj->frame_buffer_queue, (void *)&dma_buffer, timeout);
+// #if CONFIG_IDF_TARGET_ESP32S3
+//     // Currently (22.01.2024) there is a bug in ESP-IDF v5.2, that causes
+//     // GDMA to fall into a strange state if it is running while WiFi STA is connecting.
+//     // This code tries to reset GDMA if frame is not received, to try and help with
+//     // this case. It is possible to have some side effects too, though none come to mind
+//     if (!dma_buffer) {
+//         ll_cam_dma_reset(cam_obj);
+//         xQueueReceive(cam_obj->frame_buffer_queue, (void *)&dma_buffer, timeout);
+//     }
+// #endif
+//     if (dma_buffer) {
+//         if(cam_obj->jpeg_mode){
+//             // find the end marker for JPEG. Data after that can be discarded
+//             int offset_e = cam_verify_jpeg_eoi(dma_buffer->buf, dma_buffer->len);
+//             if (offset_e >= 0) {
+//                 // adjust buffer length
+//                 dma_buffer->len = offset_e + sizeof(JPEG_EOI_MARKER);
+//                 return dma_buffer;
+//             } else {
+//                 ESP_LOGW(TAG, "NO-EOI");
+//                 cam_give(dma_buffer);
+//                 TickType_t ticks_spent = xTaskGetTickCount() - start;
+//                 if (ticks_spent >= timeout) {
+//                     return NULL; /* We are out of time */
+//                 }
+//                 return cam_take(timeout - ticks_spent);//recurse!!!!
+//             }
+//         } else if(cam_obj->psram_mode && cam_obj->in_bytes_per_pixel != cam_obj->fb_bytes_per_pixel){
+//             //currently this is used only for YUV to GRAYSCALE
+//             dma_buffer->len = ll_cam_memcpy(cam_obj, dma_buffer->buf, dma_buffer->buf, dma_buffer->len);
+//         }
+//         return dma_buffer;
+//     } else {
+//         ESP_LOGW(TAG, "Failed to get the frame on time!");
+// // #if CONFIG_IDF_TARGET_ESP32S3
+// //         ll_cam_dma_print_state(cam_obj);
+// // #endif
+//     }
+//     return NULL;
+// }
+
 camera_fb_t *cam_take(TickType_t timeout)
 {
     camera_fb_t *dma_buffer = NULL;
     TickType_t start = xTaskGetTickCount();
-    xQueueReceive(cam_obj->frame_buffer_queue, (void *)&dma_buffer, timeout);
-#if CONFIG_IDF_TARGET_ESP32S3
-    // Currently (22.01.2024) there is a bug in ESP-IDF v5.2, that causes
-    // GDMA to fall into a strange state if it is running while WiFi STA is connecting.
-    // This code tries to reset GDMA if frame is not received, to try and help with
-    // this case. It is possible to have some side effects too, though none come to mind
-    if (!dma_buffer) {
-        ll_cam_dma_reset(cam_obj);
+    
+    while (timeout > 0) {
         xQueueReceive(cam_obj->frame_buffer_queue, (void *)&dma_buffer, timeout);
-    }
-#endif
-    if (dma_buffer) {
-        if(cam_obj->jpeg_mode){
-            // find the end marker for JPEG. Data after that can be discarded
-            int offset_e = cam_verify_jpeg_eoi(dma_buffer->buf, dma_buffer->len);
-            if (offset_e >= 0) {
-                // adjust buffer length
-                dma_buffer->len = offset_e + sizeof(JPEG_EOI_MARKER);
-                return dma_buffer;
-            } else {
-                ESP_LOGW(TAG, "NO-EOI");
-                cam_give(dma_buffer);
-                TickType_t ticks_spent = xTaskGetTickCount() - start;
-                if (ticks_spent >= timeout) {
-                    return NULL; /* We are out of time */
-                }
-                return cam_take(timeout - ticks_spent);//recurse!!!!
-            }
-        } else if(cam_obj->psram_mode && cam_obj->in_bytes_per_pixel != cam_obj->fb_bytes_per_pixel){
-            //currently this is used only for YUV to GRAYSCALE
-            dma_buffer->len = ll_cam_memcpy(cam_obj, dma_buffer->buf, dma_buffer->buf, dma_buffer->len);
+#if CONFIG_IDF_TARGET_ESP32S3
+        if (!dma_buffer) {
+            ll_cam_dma_reset(cam_obj);
+            xQueueReceive(cam_obj->frame_buffer_queue, (void *)&dma_buffer, timeout);
         }
-        return dma_buffer;
-    } else {
-        ESP_LOGW(TAG, "Failed to get the frame on time!");
-// #if CONFIG_IDF_TARGET_ESP32S3
-//         ll_cam_dma_print_state(cam_obj);
-// #endif
+#endif
+        if (dma_buffer) {
+            if(cam_obj->jpeg_mode){
+                int offset_e = cam_verify_jpeg_eoi(dma_buffer->buf, dma_buffer->len);
+                if (offset_e >= 0) {
+                    dma_buffer->len = offset_e + sizeof(JPEG_EOI_MARKER);
+                    return dma_buffer;
+                } else {
+                    ESP_LOGW(TAG, "NO-EOI");
+                    cam_give(dma_buffer);
+                    // Calculate remaining timeout
+                    TickType_t elapsed = xTaskGetTickCount() - start;
+                    if (elapsed >= timeout) {
+                        return NULL;
+                    }
+                    timeout -= elapsed;
+                    start = xTaskGetTickCount();
+                    continue; // Try again with remaining timeout
+                }
+            } else if(cam_obj->psram_mode && cam_obj->in_bytes_per_pixel != cam_obj->fb_bytes_per_pixel){
+                dma_buffer->len = ll_cam_memcpy(cam_obj, dma_buffer->buf, dma_buffer->buf, dma_buffer->len);
+            }
+            return dma_buffer;
+        } else {
+            ESP_LOGW(TAG, "Failed to get the frame on time!");
+            return NULL;
+        }
     }
     return NULL;
 }

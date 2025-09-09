@@ -1,0 +1,9 @@
+{
+    "files.associations": {
+        "tusb_msc_storage.h": "c",
+        "tinyusb.h": "c",
+        "tusb.h": "c",
+        "usbd.h": "c",
+        "tusb_common.h": "c"
+    }
+}
