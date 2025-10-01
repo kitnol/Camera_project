@@ -580,6 +580,7 @@ void app_main(void)
             return;
         }
 
+        ESP_LOGI("MEM", "Free heap: %d, Free PSRAM: %d",  esp_get_free_heap_size(), heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
 
         // Taking picture
         camera_fb_t *fb = esp_camera_fb_get();
