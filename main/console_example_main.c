@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/unistd.h>
+#include <sys/stat.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
@@ -33,6 +35,14 @@
 #include "esp_sleep.h"
 #include "driver/uart.h"
 #include "driver/gpio.h"
+
+#include "esp_partition.h"
+#include "tinyusb.h"
+#include "tusb_msc_storage.h"
+#include "diskio_impl.h"
+#include "diskio_sdmmc.h"
+
+#include "DS3231/ds3231.h"
 
 static const char *TAG = "camera_sd";
 #define PROMPT_STR CONFIG_IDF_TARGET
@@ -92,6 +102,13 @@ typedef struct __attribute__((packed))
 #define SD_PIN_D2 38
 #define SD_PIN_D3 14
 
+#define PIN_NUM_MISO    SD_PIN_D0  // D0
+#define PIN_NUM_MOSI    SD_PIN_CMD  // CMD
+#define PIN_NUM_CLK     SD_PIN_SCK  // CLK
+#define PIN_NUM_CS      SD_PIN_D3  // D3 (not used in 4-line mode but defined)
+#define PIN_NUM_D1      SD_PIN_D1  // D1
+#define PIN_NUM_D2      SD_PIN_D2  // D2
+
 // SD card pin configuration (SPI mode)
 #define PIN_NUM_MISO SD_PIN_D0
 #define PIN_NUM_MOSI SD_PIN_CMD
@@ -103,6 +120,7 @@ typedef struct __attribute__((packed))
 
 #define MOUNT_POINT "/sdcard"
 sdmmc_card_t *card_handle;
+static bool sd_card_mounted = false;
 
 typedef enum
 {
@@ -111,7 +129,8 @@ typedef enum
     SYSTEM_STATE_SAVE,
     SYSTEM_STATE_CLEANUP,
     SYSTEM_STATE_SLEEP,
-    SYSTEM_STATE_USB_CONNECTED
+    SYSTEM_STATE_USB_CONNECTED,
+    SYSTEM_STATE_FLASH_DRIVE
 } system_state_t;
 
 typedef enum
@@ -119,7 +138,8 @@ typedef enum
     LOGIN_NOT_ATEMPTED,
     LOGIN_SUCCESSFUL,
     LOGIN_UNSUCCESSFUL,
-    LOGIN_TIME_OUT
+    LOGIN_TIME_OUT,
+    LOGIN_TO_FLASH_DRIVE
 } login_state_t;
 
 sensor_t *sens;
@@ -132,6 +152,7 @@ login_state_t login_state = LOGIN_NOT_ATEMPTED;
 
 /* ----------------------------------- FUNCTIONS --------------------------------------- */
 
+/* Camera functions */
 static camera_config_t camera_config = {
     .pin_pwdn = -1,
     .pin_reset = CAM_PIN_RESET,
@@ -244,65 +265,55 @@ esp_err_t deinit_camera(void)
     return ESP_OK;
 }
 
-esp_err_t init_sdcard(void)
+/* SD card function */
+static esp_err_t init_sd_card(void)
 {
-    ESP_LOGI(TAG, "Initializing SD card");
-
+    esp_err_t ret;
+    
+    // Options for mounting the filesystem
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
-        .allocation_unit_size = 16 * 1024};
-
-    sdmmc_card_t *card;
-    const char mount_point[] = MOUNT_POINT;
-
-    ESP_LOGI(TAG, "Initializing SD card using SPI peripheral");
-
-    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
-    spi_bus_config_t bus_cfg = {
-        .mosi_io_num = PIN_NUM_MOSI,
-        .miso_io_num = PIN_NUM_MISO,
-        .sclk_io_num = PIN_NUM_CLK,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = 4000,
+        .allocation_unit_size = 16 * 1024
     };
-
-    esp_err_t ret = spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA);
-    if (ret != ESP_OK)
-    {
-        ESP_LOGE(TAG, "Failed to initialize bus.");
-        return ret;
-    }
-
-    sdspi_device_config_t slot_config = SDSPI_DEVICE_CONFIG_DEFAULT();
-    slot_config.gpio_cs = PIN_NUM_CS;
-    slot_config.host_id = host.slot;
-
-    ESP_LOGI(TAG, "Mounting filesystem");
-    ret = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot_config, &mount_config, &card);
-
-    if (ret != ESP_OK)
-    {
-        if (ret == ESP_FAIL)
-        {
+    
+    ESP_LOGI(TAG, "Initializing SD card");
+    
+    // Initialize SD card host
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    host.max_freq_khz = SDMMC_FREQ_52M;  // Use high speed
+    
+    // Initialize SD card slot configuration
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    slot_config.width = 4;  // 4-line mode
+    slot_config.clk = PIN_NUM_CLK;
+    slot_config.cmd = PIN_NUM_MOSI;
+    slot_config.d0 = PIN_NUM_MISO;
+    slot_config.d1 = PIN_NUM_D1;
+    slot_config.d2 = PIN_NUM_D2;
+    slot_config.d3 = PIN_NUM_CS;
+    slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+    
+    // Mount filesystem
+    ret = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot_config, &mount_config, &card_handle);
+    
+    if (ret != ESP_OK) {
+        if (ret == ESP_FAIL) {
             ESP_LOGE(TAG, "Failed to mount filesystem. "
-                          "If you want the card to be formatted, set the CONFIG_EXAMPLE_FORMAT_IF_MOUNT_FAILED menuconfig option.");
-        }
-        else
-        {
+                     "If you want the card to be formatted, set format_if_mount_failed = true.");
+        } else {
             ESP_LOGE(TAG, "Failed to initialize the card (%s). "
-                          "Make sure SD card lines have pull-up resistors in place.",
-                     esp_err_to_name(ret));
+                     "Make sure SD card lines have pull-up resistors in place.", esp_err_to_name(ret));
         }
         return ret;
     }
-    ESP_LOGI(TAG, "Filesystem mounted");
-
+    
+    ESP_LOGI(TAG, "SD card mounted successfully");
+    
     // Card has been initialized, print its properties
-    card_handle = card;
-    sdmmc_card_print_info(stdout, card);
-
+    sdmmc_card_print_info(stdout, card_handle);
+    
+    sd_card_mounted = true;
     return ESP_OK;
 }
 
@@ -368,65 +379,79 @@ esp_err_t deinit_sdcard(void)
     return ret;
 }
 
-static struct
+/* RTC functions */
+
+/* Storage callbacks for TinyUSB MSC*/
+static int32_t msc_read_cb(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize)
 {
-    struct arg_str *message;
-    struct arg_int *count;
-    struct arg_end *end;
-} print_args;
-
-static int print_command_handler(int argc, char **argv)
-{
-    int nerrors = arg_parse(argc, argv, (void **)&print_args);
-    if (nerrors != 0)
-    {
-        arg_print_errors(stderr, print_args.end, argv[0]);
-        return 1;
+    ESP_LOGD(TAG, "MSC Read - LBA: %lu, Offset: %lu, Size: %lu", lba, offset, bufsize);
+    
+    if (!sd_card_mounted || !card_handle) {
+        ESP_LOGE(TAG, "SD card not mounted");
+        return -1;
     }
-
-    const char *message = print_args.message->sval[0];
-    int count = 1;
-
-    if (print_args.count->count > 0)
-    {
-        count = print_args.count->ival[0];
-        if (count < 1)
-        {
-            printf("Count must be at least 1\n");
-            return 1;
-        }
-        if (count > 100)
-        {
-            printf("Count cannot exceed 100\n");
-            return 1;
-        }
+    
+    esp_err_t ret = sdmmc_read_sectors(card_handle, buffer, lba + (offset / 512), bufsize / 512);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read sectors: %s", esp_err_to_name(ret));
+        return -1;
     }
-
-    printf("Printing message %d time(s):\n", count);
-    for (int i = 0; i < count; i++)
-    {
-        printf("[%d] %s\n", i + 1, message);
-    }
-
-    return 0;
+    
+    return bufsize;
 }
 
-static void register_print_command(void)
+static int32_t msc_write_cb(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize)
 {
-    print_args.message = arg_str1(NULL, NULL, "<message>", "Message to print");
-    print_args.count = arg_int0("c", "count", "<n>", "Number of times to print (default: 1, max: 100)");
-    print_args.end = arg_end(2);
-
-    const esp_console_cmd_t print_cmd = {
-        .command = "print",
-        .help = "Print a message with optional repeat count",
-        .hint = NULL,
-        .func = &print_command_handler,
-        .argtable = &print_args};
-
-    ESP_ERROR_CHECK(esp_console_cmd_register(&print_cmd));
+    ESP_LOGD(TAG, "MSC Write - LBA: %lu, Offset: %lu, Size: %lu", lba, offset, bufsize);
+    
+    if (!sd_card_mounted || !card_handle) {
+        ESP_LOGE(TAG, "SD card not mounted");
+        return -1;
+    }
+    
+    esp_err_t ret = sdmmc_write_sectors(card_handle, buffer, lba + (offset / 512), bufsize / 512);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write sectors: %s", esp_err_to_name(ret));
+        return -1;
+    }
+    
+    return bufsize;
 }
 
+static esp_err_t init_usb_msc(void)
+{
+    ESP_LOGI(TAG, "Initializing USB MSC");
+    
+    if (!sd_card_mounted || !card_handle) {
+        ESP_LOGE(TAG, "SD card must be mounted before initializing USB MSC");
+        return ESP_FAIL;
+    }
+    
+    // Initialize TinyUSB
+    tinyusb_config_t tusb_cfg = {
+        .device_descriptor = NULL,
+        .string_descriptor = NULL,
+        .external_phy = false,
+    };
+    
+    ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
+    
+    // Configure MSC storage
+    const tinyusb_msc_sdmmc_config_t config_sdmmc = {
+        .card = card_handle,
+    };
+    
+    // Initialize MSC with callbacks
+    tinyusb_msc_storage_init_sdmmc(&config_sdmmc);
+    tinyusb_msc_register_callback(TINYUSB_MSC_EVENT_MOUNT_CHANGED, NULL);
+    
+    ESP_LOGI(TAG, "USB MSC initialized successfully");
+    return ESP_OK;
+}
+
+/* ----------------------------------- CONSOLE FUNCTION --------------------------------------- */
+
+/* Login command */
 static struct
 {
     struct arg_str *password;
@@ -473,6 +498,37 @@ static void register_login_command(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&login_cmd));
 }
 
+/* Turining camera into sd card */
+static int sd_command_handler(int argc, char **argv)
+{
+    if (argc < 1) {
+        printf("Usage: sd\n");
+        return 1;
+    }
+    if(login_state == LOGIN_SUCCESSFUL){
+        login_state = LOGIN_TO_FLASH_DRIVE;
+        printf("Initialising flash drive");
+        printf("\n");
+    }
+    else{
+        printf("You are not logged in\n");
+    }
+
+    return 0;
+}
+
+static void register_sd_command(void)
+{
+    const esp_console_cmd_t sd_cmd = {
+        .command = "sd",
+        .help = "Starting MSC mode",
+        .hint = NULL,
+        .func = &sd_command_handler,
+        .argtable = NULL
+    };
+
+    ESP_ERROR_CHECK(esp_console_cmd_register(&sd_cmd));
+}
 
 
 void app_main(void)
@@ -497,6 +553,11 @@ void app_main(void)
             {
                 ESP_LOGE(TAG, "+ USB connected");
                 state = SYSTEM_STATE_USB_CONNECTED;
+                gpio_reset_pin(CAM_PWR);
+                gpio_hold_dis(CAM_PWR);
+                gpio_deep_sleep_hold_dis();
+                gpio_set_direction(CAM_PWR, GPIO_MODE_OUTPUT);
+                gpio_set_level(CAM_PWR, 1);
                 break;
             }
             else
@@ -510,7 +571,7 @@ void app_main(void)
             gpio_set_direction(CAM_PWR, GPIO_MODE_OUTPUT);
             gpio_set_level(CAM_PWR, 0);
 
-            if ((ret = init_sdcard()) != ESP_OK)
+            if ((ret = init_sd_card()) != ESP_OK)
             {
                 ESP_LOGE(TAG, "SD card init failed");
                 state = SYSTEM_STATE_CLEANUP;
@@ -569,6 +630,7 @@ void app_main(void)
 
             ESP_LOGI(TAG, "Entering deep sleep");
             esp_sleep_enable_timer_wakeup(5 * 1000 * 1000);
+            
             esp_deep_sleep_start();
             break;
         case SYSTEM_STATE_USB_CONNECTED:
@@ -580,33 +642,70 @@ void app_main(void)
 
             esp_console_register_help_command();
             register_system_common();
-            register_print_command();
             register_login_command();
-            
+            register_sd_command();
 
             ESP_LOGI(TAG, "Starting ESP32-S3 Camera with SD Card");
-            ESP_LOGI(TAG, "Custom commands registered: 'login', 'sdcon', 'print'");
+            ESP_LOGI(TAG, "Custom commands registered: 'login', 'sdcon'");
 
             esp_console_dev_usb_serial_jtag_config_t hw_config = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
             ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&hw_config, &repl_config, &repl));
 
             int login_attempts = 0;
             ESP_ERROR_CHECK(esp_console_start_repl(repl));
-            while (gpio_get_level(USB_INT)){
+            while (gpio_get_level(USB_INT) && login_attempts < 30 && login_state != LOGIN_TO_FLASH_DRIVE){
                 vTaskDelay(pdMS_TO_TICKS(1000));
-                if(login_attempts > 30)
-                {
-                    ESP_LOGE(TAG, "Login time out, closing comunication, to attempt login again unplug USB from camera, wait a minute and plug again");
-                    login_state = LOGIN_TIME_OUT;
-                    login_attempts = 0;
-                    esp_console_deinit();
-                }
                 if(login_state == LOGIN_NOT_ATEMPTED)
                 {
                     login_attempts++;
                 }
             }
+
+            if(login_state == LOGIN_TO_FLASH_DRIVE)
+            {
+                ESP_LOGI(TAG, "Camera goes to flash drive mode");
+                state = SYSTEM_STATE_FLASH_DRIVE;
+                break;
+            }
+            else{
+                ESP_LOGE(TAG, "Login time out, closing comunication, to attempt login again unplug USB from camera, wait a minute and plug again");
+                login_state = LOGIN_TIME_OUT;
+                login_attempts = 0;
+                esp_console_deinit();
+                state = SYSTEM_STATE_INIT;
+                break;
+            }
+
+            
             state = SYSTEM_STATE_INIT;
+            break;
+        case SYSTEM_STATE_FLASH_DRIVE:
+            if(!sd_card_mounted)
+            {
+                ret = init_sd_card();
+                if (ret != ESP_OK) {
+                    ESP_LOGE(TAG, "Failed to initialize SD card");
+                    login_state = LOGIN_NOT_ATEMPTED;
+                    state = SYSTEM_STATE_CLEANUP;
+                    break;
+                }
+            }
+            
+            // Initialize USB MSC
+            ret = init_usb_msc();
+            if (ret != ESP_OK) {
+                ESP_LOGE(TAG, "Failed to initialize USB MSC");
+                login_state = LOGIN_NOT_ATEMPTED;
+                state = SYSTEM_STATE_CLEANUP;
+                break;
+            }
+
+            while (gpio_get_level(USB_INT)){
+                vTaskDelay(pdMS_TO_TICKS(1000));
+            }
+
+            state = SYSTEM_STATE_CLEANUP;
+            login_state = LOGIN_NOT_ATEMPTED;
             break;
         }
     }
