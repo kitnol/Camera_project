@@ -42,7 +42,7 @@
 #include "diskio_impl.h"
 #include "diskio_sdmmc.h"
 
-#include "DS3231/ds3231.h"
+#include "ds3231.h"
 
 static const char *TAG = "camera_sd";
 #define PROMPT_STR CONFIG_IDF_TARGET
@@ -530,6 +530,48 @@ static void register_sd_command(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&sd_cmd));
 }
 
+/* RTC temperature */
+static int temp_command_handler(int argc, char **argv)
+{
+    if (argc < 1) {
+        printf("Usage: temp\n");
+        return 1;
+    }
+    if(login_state == LOGIN_SUCCESSFUL){
+        i2c_dev_t dev;
+        ds3231_init_desc(&dev, 1, 17, 18);
+        int16_t temp;
+        esp_err_t res = ds3231_get_raw_temp(&dev, &temp);
+        if(res == ESP_OK){
+            printf("Raw temperature: %d (0.25C units)\n", temp);
+            float temp_c = temp * 0.25;
+            printf("Temperature: %.2f C\n", temp_c);
+        }
+        else{
+            printf("Failed to read temperature: %s\n", esp_err_to_name(res));
+        }
+    }
+    else{
+        printf("You are not logged in\n");
+    }
+
+    return 0;
+}
+
+static void register_temp_command(void)
+{
+    const esp_console_cmd_t temp_cmd = {
+        .command = "temp",
+        .help = "Getting RTC temperature",
+        .hint = NULL,
+        .func = &temp_command_handler,
+        .argtable = NULL
+    };
+
+    ESP_ERROR_CHECK(esp_console_cmd_register(&temp_cmd));
+}
+
+
 
 void app_main(void)
 {   
@@ -644,6 +686,7 @@ void app_main(void)
             register_system_common();
             register_login_command();
             register_sd_command();
+            register_temp_command();
 
             ESP_LOGI(TAG, "Starting ESP32-S3 Camera with SD Card");
             ESP_LOGI(TAG, "Custom commands registered: 'login', 'sdcon'");

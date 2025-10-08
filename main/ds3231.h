@@ -3,9 +3,8 @@
 
 #include <time.h>
 #include <stdbool.h>
-#include "driver/i2c.h"
 
-#include "i2cdev.h"
+
 
 #define DS3231_ADDR 0x68 //!< I2C address
 
