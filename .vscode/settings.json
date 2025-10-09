@@ -4,6 +4,7 @@
         "tinyusb.h": "c",
         "tusb.h": "c",
         "usbd.h": "c",
-        "tusb_common.h": "c"
+        "tusb_common.h": "c",
+        "i2cdev.h": "c"
     }
 }

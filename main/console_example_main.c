@@ -44,6 +44,8 @@
 
 #include "ds3231.h"
 
+#include "soc/adc_channel.h"
+
 static const char *TAG = "camera_sd";
 #define PROMPT_STR CONFIG_IDF_TARGET
 #define VREG_ADDR 0x36
@@ -102,12 +104,12 @@ typedef struct __attribute__((packed))
 #define SD_PIN_D2 38
 #define SD_PIN_D3 14
 
-#define PIN_NUM_MISO    SD_PIN_D0  // D0
-#define PIN_NUM_MOSI    SD_PIN_CMD  // CMD
-#define PIN_NUM_CLK     SD_PIN_SCK  // CLK
-#define PIN_NUM_CS      SD_PIN_D3  // D3 (not used in 4-line mode but defined)
-#define PIN_NUM_D1      SD_PIN_D1  // D1
-#define PIN_NUM_D2      SD_PIN_D2  // D2
+#define PIN_NUM_MISO SD_PIN_D0  // D0
+#define PIN_NUM_MOSI SD_PIN_CMD // CMD
+#define PIN_NUM_CLK SD_PIN_SCK  // CLK
+#define PIN_NUM_CS SD_PIN_D3    // D3 (not used in 4-line mode but defined)
+#define PIN_NUM_D1 SD_PIN_D1    // D1
+#define PIN_NUM_D2 SD_PIN_D2    // D2
 
 // SD card pin configuration (SPI mode)
 #define PIN_NUM_MISO SD_PIN_D0
@@ -117,6 +119,10 @@ typedef struct __attribute__((packed))
 
 #define LED_PIN 15
 #define USB_INT 21
+#define BAT_VOLTAGE 16
+
+#define RTC_SDA 17
+#define RTC_SCL 18
 
 #define MOUNT_POINT "/sdcard"
 sdmmc_card_t *card_handle;
@@ -147,6 +153,7 @@ camera_fb_t *fbsave;
 
 RTC_DATA_ATTR int image_count = 0;
 RTC_DATA_ATTR int time_set = 0;
+RTC_DATA_ATTR int running_mode = 0; // 0 = normal, 1 = motion detection
 login_state_t login_state = LOGIN_NOT_ATEMPTED;
 #define CORRECT_PASSWORD "hello"
 
@@ -269,23 +276,22 @@ esp_err_t deinit_camera(void)
 static esp_err_t init_sd_card(void)
 {
     esp_err_t ret;
-    
+
     // Options for mounting the filesystem
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 5,
-        .allocation_unit_size = 16 * 1024
-    };
-    
+        .allocation_unit_size = 16 * 1024};
+
     ESP_LOGI(TAG, "Initializing SD card");
-    
+
     // Initialize SD card host
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.max_freq_khz = SDMMC_FREQ_52M;  // Use high speed
-    
+    host.max_freq_khz = SDMMC_FREQ_52M; // Use high speed
+
     // Initialize SD card slot configuration
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-    slot_config.width = 4;  // 4-line mode
+    slot_config.width = 4; // 4-line mode
     slot_config.clk = PIN_NUM_CLK;
     slot_config.cmd = PIN_NUM_MOSI;
     slot_config.d0 = PIN_NUM_MISO;
@@ -293,26 +299,31 @@ static esp_err_t init_sd_card(void)
     slot_config.d2 = PIN_NUM_D2;
     slot_config.d3 = PIN_NUM_CS;
     slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
-    
+
     // Mount filesystem
     ret = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot_config, &mount_config, &card_handle);
-    
-    if (ret != ESP_OK) {
-        if (ret == ESP_FAIL) {
+
+    if (ret != ESP_OK)
+    {
+        if (ret == ESP_FAIL)
+        {
             ESP_LOGE(TAG, "Failed to mount filesystem. "
-                     "If you want the card to be formatted, set format_if_mount_failed = true.");
-        } else {
+                          "If you want the card to be formatted, set format_if_mount_failed = true.");
+        }
+        else
+        {
             ESP_LOGE(TAG, "Failed to initialize the card (%s). "
-                     "Make sure SD card lines have pull-up resistors in place.", esp_err_to_name(ret));
+                          "Make sure SD card lines have pull-up resistors in place.",
+                     esp_err_to_name(ret));
         }
         return ret;
     }
-    
+
     ESP_LOGI(TAG, "SD card mounted successfully");
-    
+
     // Card has been initialized, print its properties
     sdmmc_card_print_info(stdout, card_handle);
-    
+
     sd_card_mounted = true;
     return ESP_OK;
 }
@@ -321,7 +332,7 @@ esp_err_t save_image_to_sd(camera_fb_t *fb, const char *filename)
 {
     ESP_LOGI(TAG, "Saving image to SD card: %s", filename);
 
-    char filepath[64];
+    char filepath[255];
     snprintf(filepath, sizeof(filepath), MOUNT_POINT "/%s", filename);
 
     FILE *file = fopen(filepath, "wb");
@@ -370,7 +381,7 @@ esp_err_t deinit_sdcard(void)
     }
 
     // Deinitialize SPI bus
-    ret = spi_bus_free(SDSPI_DEFAULT_HOST);
+    ret = sdmmc_host_deinit();
     if (ret != ESP_OK)
     {
         ESP_LOGW(TAG, "Failed to free SPI bus: %s", esp_err_to_name(ret));
@@ -379,73 +390,141 @@ esp_err_t deinit_sdcard(void)
     return ret;
 }
 
-/* RTC functions */
-
 /* Storage callbacks for TinyUSB MSC*/
-static int32_t msc_read_cb(uint32_t lba, uint32_t offset, void* buffer, uint32_t bufsize)
+static int32_t msc_read_cb(uint32_t lba, uint32_t offset, void *buffer, uint32_t bufsize)
 {
     ESP_LOGD(TAG, "MSC Read - LBA: %lu, Offset: %lu, Size: %lu", lba, offset, bufsize);
-    
-    if (!sd_card_mounted || !card_handle) {
+
+    if (!sd_card_mounted || !card_handle)
+    {
         ESP_LOGE(TAG, "SD card not mounted");
         return -1;
     }
-    
+
     esp_err_t ret = sdmmc_read_sectors(card_handle, buffer, lba + (offset / 512), bufsize / 512);
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         ESP_LOGE(TAG, "Failed to read sectors: %s", esp_err_to_name(ret));
         return -1;
     }
-    
+
     return bufsize;
 }
 
-static int32_t msc_write_cb(uint32_t lba, uint32_t offset, uint8_t* buffer, uint32_t bufsize)
+static int32_t msc_write_cb(uint32_t lba, uint32_t offset, uint8_t *buffer, uint32_t bufsize)
 {
     ESP_LOGD(TAG, "MSC Write - LBA: %lu, Offset: %lu, Size: %lu", lba, offset, bufsize);
-    
-    if (!sd_card_mounted || !card_handle) {
+
+    if (!sd_card_mounted || !card_handle)
+    {
         ESP_LOGE(TAG, "SD card not mounted");
         return -1;
     }
-    
+
     esp_err_t ret = sdmmc_write_sectors(card_handle, buffer, lba + (offset / 512), bufsize / 512);
-    if (ret != ESP_OK) {
+    if (ret != ESP_OK)
+    {
         ESP_LOGE(TAG, "Failed to write sectors: %s", esp_err_to_name(ret));
         return -1;
     }
-    
+
     return bufsize;
 }
 
 static esp_err_t init_usb_msc(void)
 {
     ESP_LOGI(TAG, "Initializing USB MSC");
-    
-    if (!sd_card_mounted || !card_handle) {
+
+    if (!sd_card_mounted || !card_handle)
+    {
         ESP_LOGE(TAG, "SD card must be mounted before initializing USB MSC");
         return ESP_FAIL;
     }
-    
+
     // Initialize TinyUSB
     tinyusb_config_t tusb_cfg = {
         .device_descriptor = NULL,
         .string_descriptor = NULL,
         .external_phy = false,
     };
-    
+
     ESP_ERROR_CHECK(tinyusb_driver_install(&tusb_cfg));
-    
+
     // Configure MSC storage
     const tinyusb_msc_sdmmc_config_t config_sdmmc = {
         .card = card_handle,
     };
-    
+
     // Initialize MSC with callbacks
     tinyusb_msc_storage_init_sdmmc(&config_sdmmc);
     tinyusb_msc_register_callback(TINYUSB_MSC_EVENT_MOUNT_CHANGED, NULL);
-    
+
     ESP_LOGI(TAG, "USB MSC initialized successfully");
+    return ESP_OK;
+}
+
+/* RTC functions */
+static esp_err_t read_time(struct tm *timeinfo)
+{
+    static i2c_master_dev_handle_t ds3231_dev = NULL;
+
+    struct tm timeinfo_rtc;
+    esp_err_t ret = ds3231_init_desc(&ds3231_dev, I2C_NUM_0, RTC_SDA, RTC_SCL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize DS3231: %s", esp_err_to_name(ret));
+        return 1;
+    }
+
+    ret = ds3231_get_time(ds3231_dev, &timeinfo_rtc);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get current time");
+        return ret;
+    }
+
+    *timeinfo = timeinfo_rtc;
+
+    ret = ds3231_deinit(ds3231_dev);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to deinitialize DS3231: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    return ESP_OK;
+}
+
+static esp_err_t set_alarm(void)
+{
+    static i2c_master_dev_handle_t ds3231_dev = NULL;
+
+    struct tm timeinfo;
+
+    esp_err_t ret = ds3231_init_desc(&ds3231_dev, I2C_NUM_0, RTC_SDA, RTC_SCL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize DS3231: %s", esp_err_to_name(ret));
+        return 1;
+    }
+
+    ret = ds3231_get_time(ds3231_dev, &timeinfo);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get current time");
+        return ret;
+    }
+
+    // Set alarm for 30 seconds from now
+    timeinfo.tm_sec = (timeinfo.tm_sec + 15) % 60;
+    if (timeinfo.tm_sec < 30) {
+        timeinfo.tm_min++;  // Increment minute if seconds wrap around
+    }
+
+    ds3231_set_alarm(ds3231_dev, DS3231_ALARM_1, &timeinfo, DS3231_ALARM1_MATCH_SECMIN, NULL, 0);
+
+    ret = ds3231_deinit(ds3231_dev);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to deinitialize DS3231: %s", esp_err_to_name(ret));
+        return ret;
+    }
+
+    printf("Alarm set to trigger every 30 seconds\n");
     return ESP_OK;
 }
 
@@ -470,12 +549,14 @@ static int login_command_handler(int argc, char **argv)
     const char *password = "hello";
     const char *pass = login_args.password->sval[0];
     printf("Inputed password: %s\n", pass);
-    
-    if(strcmp(pass, password) == 0){
+
+    if (strcmp(pass, password) == 0)
+    {
         printf("Login succesful!\n");
         login_state = LOGIN_SUCCESSFUL;
     }
-    else{
+    else
+    {
         login_state = LOGIN_UNSUCCESSFUL;
         printf("Wrong password\n");
     }
@@ -501,18 +582,20 @@ static void register_login_command(void)
 /* Turining camera into sd card */
 static int sd_command_handler(int argc, char **argv)
 {
-    if (argc < 1) {
+    if (argc < 1)
+    {
         printf("Usage: sd\n");
         return 1;
     }
-    if(login_state == LOGIN_SUCCESSFUL){
-        login_state = LOGIN_TO_FLASH_DRIVE;
-        printf("Initialising flash drive");
-        printf("\n");
-    }
-    else{
+
+    if (login_state != LOGIN_SUCCESSFUL) {
         printf("You are not logged in\n");
+        return 1;
     }
+
+    login_state = LOGIN_TO_FLASH_DRIVE;
+    printf("Initialising flash drive");
+    printf("\n");
 
     return 0;
 }
@@ -524,36 +607,87 @@ static void register_sd_command(void)
         .help = "Starting MSC mode",
         .hint = NULL,
         .func = &sd_command_handler,
-        .argtable = NULL
-    };
+        .argtable = NULL};
 
     ESP_ERROR_CHECK(esp_console_cmd_register(&sd_cmd));
 }
 
-/* RTC temperature */
-static int temp_command_handler(int argc, char **argv)
+/* RTC commands */
+static i2c_master_dev_handle_t global_ds3231_dev = NULL;
+
+static int init_rtc_command_handler(int argc, char **argv)
 {
     if (argc < 1) {
+        printf("Usage: initrtc\n");
+        return 1;
+    }
+
+    if (login_state != LOGIN_SUCCESSFUL) {
+        printf("You are not logged in\n");
+        return 1;
+    }
+
+    esp_err_t ret = ds3231_init_desc(&global_ds3231_dev, I2C_NUM_1, RTC_SDA, RTC_SCL);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to initialize DS3231: %s", esp_err_to_name(ret));
+        return 1;
+    }
+
+    printf("RTC initialized successfully\n");
+    return 0;
+}
+
+static void register_init_rtc_command(void)
+{
+    const esp_console_cmd_t init_rtc_cmd = {
+        .command = "init_rtc",
+        .help = "Initialize RTC",
+        .hint = NULL,
+        .func = &init_rtc_command_handler,
+        .argtable = NULL
+    };
+
+    ESP_ERROR_CHECK(esp_console_cmd_register(&init_rtc_cmd));
+}
+
+static int temp_command_handler(int argc, char **argv)
+{
+    if (argc < 1)
+    {
         printf("Usage: temp\n");
         return 1;
     }
-    if(login_state == LOGIN_SUCCESSFUL){
-        i2c_dev_t dev;
-        ds3231_init_desc(&dev, 1, 17, 18);
-        int16_t temp;
-        esp_err_t res = ds3231_get_raw_temp(&dev, &temp);
-        if(res == ESP_OK){
-            printf("Raw temperature: %d (0.25C units)\n", temp);
-            float temp_c = temp * 0.25;
-            printf("Temperature: %.2f C\n", temp_c);
-        }
-        else{
-            printf("Failed to read temperature: %s\n", esp_err_to_name(res));
-        }
-    }
-    else{
+
+    if (login_state != LOGIN_SUCCESSFUL) {
         printf("You are not logged in\n");
+        return 1;
     }
+
+
+    esp_err_t ret;
+    i2c_master_dev_handle_t ds3231_dev;
+    ret = ds3231_init_desc(&ds3231_dev, I2C_NUM_1, RTC_SDA, RTC_SCL);
+    if (ret != ESP_OK)
+    {
+        ESP_LOGE(TAG, "Failed to initialize DS3231: %s", esp_err_to_name(ret));
+        return 1;
+    }
+
+    int16_t raw_temp;
+    ret = ds3231_get_raw_temp(ds3231_dev, &raw_temp);
+    if (ret == ESP_OK)
+    {
+        // Convert raw temperature to float
+        float temp_celsius = raw_temp * 0.25;
+        ESP_LOGI(TAG, "Raw Temperature: %d (0x%04X), Temperature: %.2f°C",
+                 raw_temp, raw_temp, temp_celsius);
+    }
+    else
+    {
+        ESP_LOGE(TAG, "Failed to read temperature: %s", esp_err_to_name(ret));
+    }
+
+    ESP_LOGI(TAG, "DS3231 initialized successfully!");
 
     return 0;
 }
@@ -565,21 +699,213 @@ static void register_temp_command(void)
         .help = "Getting RTC temperature",
         .hint = NULL,
         .func = &temp_command_handler,
-        .argtable = NULL
-    };
+        .argtable = NULL};
 
     ESP_ERROR_CHECK(esp_console_cmd_register(&temp_cmd));
 }
 
+static struct {
+    struct arg_int *year;
+    struct arg_int *month;
+    struct arg_int *day;
+    struct arg_int *hour;
+    struct arg_int *minute;
+    struct arg_end *end;
+} time_args;
 
+static int time_command_handler(int argc, char **argv)
+{
+    int nerrors = arg_parse(argc, argv, (void **)&time_args);
+    if (nerrors != 0) {
+        arg_print_errors(stderr, time_args.end, argv[0]);
+        return 1;
+    }
+
+    if (login_state != LOGIN_SUCCESSFUL) {
+        printf("You are not logged in\n");
+        return 1;
+    }
+
+    if (global_ds3231_dev == NULL) {
+        printf("RTC not initialized. Please run 'init_rtc' command first.\n");
+        return 1;
+    }
+
+    struct tm time = {
+        .tm_year = time_args.year->ival[0] - 1900,
+        .tm_mon = time_args.month->ival[0] - 1,
+        .tm_mday = time_args.day->ival[0],
+        .tm_hour = time_args.hour->ival[0],
+        .tm_min = time_args.minute->ival[0],
+        .tm_sec = 0
+    };
+
+    esp_err_t ret = ds3231_set_time(global_ds3231_dev, &time);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to set time");
+        return 1;
+    }
+
+    printf("Time set to %02d:%02d:00\n", time.tm_hour, time.tm_min);
+    return 0;
+}
+
+static void register_time_command(void)
+{
+    time_args.year = arg_int1(NULL, NULL, "<year>", "Year (e.g., 2024)");
+    time_args.month = arg_int1(NULL, NULL, "<month>", "Month (1-12)");
+    time_args.day = arg_int1(NULL, NULL, "<day>", "Day (1-31)");
+    time_args.hour = arg_int1(NULL, NULL, "<hour>", "Hour (0-23)");
+    time_args.minute = arg_int1(NULL, NULL, "<minute>", "Minute (0-59)");
+    time_args.end = arg_end(2);
+
+    const esp_console_cmd_t time_cmd = {
+        .command = "settime",
+        .help = "Set RTC time (hour minute)",
+        .hint = NULL,
+        .func = &time_command_handler,
+        .argtable = &time_args
+    };
+
+    ESP_ERROR_CHECK(esp_console_cmd_register(&time_cmd));
+}
+
+static int get_time_command_handler(int argc, char **argv)
+{
+    if (argc < 1) {
+        printf("Usage: gettime\n");
+        return 1;
+    }
+
+    if (login_state != LOGIN_SUCCESSFUL) {
+        printf("You are not logged in\n");
+        return 1;
+    }
+
+    if (global_ds3231_dev == NULL) {
+        printf("RTC not initialized. Please run 'init_rtc' command first.\n");
+        return 1;
+    }
+
+    struct tm timeinfo;
+    esp_err_t ret = ds3231_get_time(global_ds3231_dev, &timeinfo);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to get time from RTC");
+        return 1;
+    }
+
+    printf("Current RTC time: %04d.%02d.%02d_%02d:%02d:%02d\n", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+    return 0;
+}
+
+static void register_get_time_command(void)
+{
+    const esp_console_cmd_t get_time_cmd = {
+        .command = "gettime",
+        .help = "Get RTC time",
+        .hint = NULL,
+        .func = &get_time_command_handler,
+        .argtable = NULL
+    };
+
+    ESP_ERROR_CHECK(esp_console_cmd_register(&get_time_cmd));
+}
+
+/*static int bat_command_handler(int argc, char **argv)
+{
+    if (argc < 1) {
+        printf("Usage: voltage\n");
+        return 1;
+    }
+
+    if (login_state != LOGIN_SUCCESSFUL) {
+        printf("You are not logged in\n");
+        return 1;
+    }
+
+    // Configure ADC
+    adc_oneshot_unit_handle_t adc1_handle;
+    adc_oneshot_unit_init_cfg_t init_config1 = {
+        .unit_id = ADC_UNIT_1,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle));
+
+    // Configure ADC channel
+    adc_oneshot_chan_cfg_t config = {
+        .bitwidth = ADC_BITWIDTH_12,
+        .atten = ADC_ATTEN_DB_11,
+    };
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, ADC_CHANNEL_5, &config));
+
+    // Read ADC
+    int raw_value;
+    ESP_ERROR_CHECK(adc_oneshot_read(adc1_handle, ADC_CHANNEL_5, &raw_value));
+    
+    // Convert to voltage (assuming 3.3V reference)
+    float voltage = (raw_value * 3.3) / 4095.0;
+    printf("Battery voltage: %.2fV\n", voltage * 2); // Multiply by 2 if using voltage divider
+
+    // Clean up
+    ESP_ERROR_CHECK(adc_oneshot_del_unit(adc1_handle));
+    
+    return 0;
+}
+
+static void register_bat_command(void)
+{
+    const esp_console_cmd_t bat_cmd = {
+        .command = "bat",
+        .help = "Read battery voltage",
+        .hint = NULL,
+        .func = &bat_command_handler,
+        .argtable = NULL
+    };
+
+    ESP_ERROR_CHECK(esp_console_cmd_register(&bat_cmd));
+}*/
+
+/* Mode command */
+static int mode_command_handler(int argc, char **argv)
+{
+    if (argc < 1) {
+        printf("Usage: mode\n");
+        return 1;
+    }
+
+    if (login_state != LOGIN_SUCCESSFUL) {
+        printf("You are not logged in\n");
+        return 1;
+    }
+
+    running_mode = 1;
+    printf("Running mode changed to: %d\n", running_mode);
+    printf("0 = normal mode, 1 = motion detection mode\n");
+    return 0;
+}
+
+static void register_mode_command(void)
+{
+    const esp_console_cmd_t mode_cmd = {
+        .command = "mode",
+        .help = "Toggle running mode between normal (0) and motion detection (1)",
+        .hint = NULL,
+        .func = &mode_command_handler,
+        .argtable = NULL
+    };
+
+    ESP_ERROR_CHECK(esp_console_cmd_register(&mode_cmd));
+}
+
+/* ---------------------------------------------------------------------------------------------------------------------------------------------- */
 
 void app_main(void)
-{   
+{
 
     system_state_t state = SYSTEM_STATE_INIT;
     esp_err_t ret = ESP_OK;
-    char filename[32];
+    char filename[200];
     camera_fb_t *fb = NULL;
+    struct tm timeinfo;
 
     while (1)
     {
@@ -587,19 +913,19 @@ void app_main(void)
         {
         case SYSTEM_STATE_INIT:
             gpio_set_direction(USB_INT, GPIO_MODE_INPUT);
+            gpio_reset_pin(CAM_PWR);
+            gpio_hold_dis(CAM_PWR);
+            gpio_deep_sleep_hold_dis();
+            gpio_set_direction(CAM_PWR, GPIO_MODE_OUTPUT);
+            gpio_set_level(CAM_PWR, 1);
             if (gpio_get_level(USB_INT) == 0)
             {
                 login_state = LOGIN_NOT_ATEMPTED;
             }
-            if (gpio_get_level(USB_INT) == 1 && login_state != LOGIN_TIME_OUT)
+            if (gpio_get_level(USB_INT) == 1 && login_state != LOGIN_TIME_OUT && running_mode == 0)
             {
                 ESP_LOGE(TAG, "+ USB connected");
                 state = SYSTEM_STATE_USB_CONNECTED;
-                gpio_reset_pin(CAM_PWR);
-                gpio_hold_dis(CAM_PWR);
-                gpio_deep_sleep_hold_dis();
-                gpio_set_direction(CAM_PWR, GPIO_MODE_OUTPUT);
-                gpio_set_level(CAM_PWR, 1);
                 break;
             }
             else
@@ -607,10 +933,21 @@ void app_main(void)
                 ESP_LOGE(TAG, "- USB disconnected");
             }
 
-            gpio_reset_pin(CAM_PWR);
-            gpio_hold_dis(CAM_PWR);
-            gpio_deep_sleep_hold_dis();
-            gpio_set_direction(CAM_PWR, GPIO_MODE_OUTPUT);
+
+            ret = read_time(&timeinfo);
+            if (ret != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Failed to read time from RTC");
+            }
+            else{
+                if(timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 6) // Sleep between 10 PM and 6 AM
+                {
+                    state = SYSTEM_STATE_SLEEP;
+                    break;
+                }
+            }
+            
+
             gpio_set_level(CAM_PWR, 0);
 
             if ((ret = init_sd_card()) != ESP_OK)
@@ -642,7 +979,12 @@ void app_main(void)
             break;
 
         case SYSTEM_STATE_SAVE:
-            snprintf(filename, sizeof(filename), "image%03d.jpg", image_count++);
+            struct tm timeinfo;
+            if ((ret = read_time(&timeinfo)) != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Failed to read time from RTC");
+            }
+            snprintf(filename, sizeof(filename), "%04dy%02dm%02dd_%02dx%02dx%02d.jpg", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
             if ((ret = save_image_to_sd(fb, filename)) != ESP_OK)
             {
                 ESP_LOGE(TAG, "Failed to save image");
@@ -671,7 +1013,27 @@ void app_main(void)
             vTaskDelay(pdMS_TO_TICKS(50));
 
             ESP_LOGI(TAG, "Entering deep sleep");
-            esp_sleep_enable_timer_wakeup(5 * 1000 * 1000);
+            ret = read_time(&timeinfo);
+            if (ret != ESP_OK)
+            {
+                ESP_LOGE(TAG, "Failed to read time from RTC");
+                esp_sleep_enable_timer_wakeup(30 * 1000 * 1000);
+                esp_sleep_enable_ext0_wakeup(21, 1);  // Wake up when GPIO 47 goes high
+
+                esp_deep_sleep_start();
+                break;
+            }
+            
+            if(timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 6) // Sleep between 10 PM and 6 AM
+            {
+                ESP_LOGI(TAG, "Night time detected, sleeping for 30 minutes");
+                esp_sleep_enable_timer_wakeup(30 * 60 * 1000 * 1000); // 30 minutes
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Day time detected, sleeping for 5 minutes");
+                esp_sleep_enable_timer_wakeup(15 * 1000 * 1000); // 5 minutes
+            }
             
             esp_deep_sleep_start();
             break;
@@ -687,6 +1049,10 @@ void app_main(void)
             register_login_command();
             register_sd_command();
             register_temp_command();
+            register_init_rtc_command();
+            register_time_command();
+            register_get_time_command();
+            register_mode_command();
 
             ESP_LOGI(TAG, "Starting ESP32-S3 Camera with SD Card");
             ESP_LOGI(TAG, "Custom commands registered: 'login', 'sdcon'");
@@ -696,21 +1062,23 @@ void app_main(void)
 
             int login_attempts = 0;
             ESP_ERROR_CHECK(esp_console_start_repl(repl));
-            while (gpio_get_level(USB_INT) && login_attempts < 30 && login_state != LOGIN_TO_FLASH_DRIVE){
+            while (gpio_get_level(USB_INT) && login_attempts < 30 && login_state != LOGIN_TO_FLASH_DRIVE && running_mode == 0)
+            {
                 vTaskDelay(pdMS_TO_TICKS(1000));
-                if(login_state == LOGIN_NOT_ATEMPTED)
+                if (login_state == LOGIN_NOT_ATEMPTED)
                 {
                     login_attempts++;
                 }
             }
 
-            if(login_state == LOGIN_TO_FLASH_DRIVE)
+            if (login_state == LOGIN_TO_FLASH_DRIVE)
             {
                 ESP_LOGI(TAG, "Camera goes to flash drive mode");
                 state = SYSTEM_STATE_FLASH_DRIVE;
                 break;
             }
-            else{
+            else
+            {
                 ESP_LOGE(TAG, "Login time out, closing comunication, to attempt login again unplug USB from camera, wait a minute and plug again");
                 login_state = LOGIN_TIME_OUT;
                 login_attempts = 0;
@@ -719,31 +1087,33 @@ void app_main(void)
                 break;
             }
 
-            
             state = SYSTEM_STATE_INIT;
             break;
         case SYSTEM_STATE_FLASH_DRIVE:
-            if(!sd_card_mounted)
+            if (!sd_card_mounted)
             {
                 ret = init_sd_card();
-                if (ret != ESP_OK) {
+                if (ret != ESP_OK)
+                {
                     ESP_LOGE(TAG, "Failed to initialize SD card");
                     login_state = LOGIN_NOT_ATEMPTED;
                     state = SYSTEM_STATE_CLEANUP;
                     break;
                 }
             }
-            
+
             // Initialize USB MSC
             ret = init_usb_msc();
-            if (ret != ESP_OK) {
+            if (ret != ESP_OK)
+            {
                 ESP_LOGE(TAG, "Failed to initialize USB MSC");
                 login_state = LOGIN_NOT_ATEMPTED;
                 state = SYSTEM_STATE_CLEANUP;
                 break;
             }
 
-            while (gpio_get_level(USB_INT)){
+            while (gpio_get_level(USB_INT))
+            {
                 vTaskDelay(pdMS_TO_TICKS(1000));
             }
 
