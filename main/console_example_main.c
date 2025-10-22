@@ -16,6 +16,8 @@
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
 #include "driver/sdmmc_host.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_common.h"
 
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -98,7 +100,6 @@ typedef struct __attribute__((packed))
 #define CAM_PIN_PCLK 5  // Pixel clock (safe pin) +
 
 #define CAM_PWR CAM_PIN_PWDN
-#define CAM_VREG_28V 
 
 // SD card pin configuration (SDMMC)
 #define SD_PIN_SCK 12
@@ -274,8 +275,7 @@ static esp_err_t init_sd_card(void)
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 3,
-        .allocation_unit_size = 64 * 1024,
-        .disk_status_check_enable = false
+        .allocation_unit_size = 16 * 1024,
     };
 
     // Initialize SD card host
@@ -319,20 +319,23 @@ static esp_err_t init_sd_card(void)
     return ESP_OK;
 }
 
-esp_err_t save_image_to_sd(camera_fb_t *fb, const char *dir ,const char *filename)
+esp_err_t save_image_to_sd(camera_fb_t *fb, const char *dir, const char *filename)
 {
-    ESP_LOGI(TAG, "Saving image to SD card: %s", filename);
-    int64_t t1 = esp_timer_get_time();
+    char filepath[200];
+    snprintf(filepath, sizeof(filepath), "%s/%s", MOUNT_POINT, dir);
 
-    char filepath[255];
-    snprintf(filepath, sizeof(filepath), MOUNT_POINT "/%s", dir);
+    if(fb == NULL)
+    {
+        ESP_LOGE(TAG, "Frame buffer is NULL, cannot save image");
+        return ESP_FAIL;
+    }
 
     struct stat st;
     if (stat(filepath, &st) != 0) {
         mkdir(filepath, 0700);  // Create directory if doesn't exist
     }
 
-    snprintf(filepath, sizeof(filepath), MOUNT_POINT "/%s/%s", dir, filename);
+    snprintf(filepath, sizeof(filepath), "%s/%s/%s", MOUNT_POINT, dir, filename);
 
     FILE *file = fopen(filepath, "wb");
     if (file == NULL)
@@ -340,27 +343,17 @@ esp_err_t save_image_to_sd(camera_fb_t *fb, const char *dir ,const char *filenam
         ESP_LOGE(TAG, "Failed to open file for writing: %s", filepath);
         return ESP_FAIL;
     }
-    int64_t t2 = esp_timer_get_time();
-    ESP_LOGI(TAG, "File open took: %lld ms", (t2 - t1) / 1000);
-    setvbuf(file, NULL, _IOFBF, 16384);
-    int64_t t3 = esp_timer_get_time();
+
     size_t written = fwrite(fb->buf, 1, fb->len, file);
-    int64_t t4 = esp_timer_get_time();
-    ESP_LOGI(TAG, "fwrite took: %lld ms", (t4 - t3) / 1000);
-
-    int64_t t5 = esp_timer_get_time();
-    fclose(file);
-    int64_t t6 = esp_timer_get_time();
-    
-    ESP_LOGI(TAG, "fclose took: %lld ms", (t6 - t5) / 1000);
-
     if (written != fb->len)
     {
-        ESP_LOGE(TAG, "Failed to write complete image. Written: %d, Expected: %d", written, fb->len);
+        ESP_LOGE(TAG, "Failed to write complete image data to file: %s", filepath);
+        fclose(file);
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Image saved successfully: %s (%d bytes)", filepath, fb->len);
+    fclose(file);
+    ESP_LOGI(TAG, "Image saved to %s (%u bytes)", filepath, (unsigned int)written);
     return ESP_OK;
 }
 
@@ -381,6 +374,12 @@ esp_err_t deinit_sdcard(void)
             ESP_LOGI(TAG, "SD card unmounted successfully");
         }
         card_handle = NULL;
+    }
+
+    ret = sdmmc_host_deinit();
+    if (ret != ESP_OK)
+    {
+        ESP_LOGW(TAG, "Failed to free SPI bus: %s", esp_err_to_name(ret));
     }
 
     return ret;
@@ -1220,6 +1219,7 @@ void app_main(void)
     char dir[200];
     char adc_read[200];
     camera_fb_t *fb = NULL;
+
     struct tm timeinfo;
 
     int64_t t_init = 0;
@@ -1244,9 +1244,6 @@ void app_main(void)
             gpio_deep_sleep_hold_dis();
             gpio_set_direction(CAM_PWR, GPIO_MODE_OUTPUT);
             gpio_set_level(CAM_PWR, 1);
-            gpio_reset_pin(GPIO_NUM_4);
-            gpio_set_pull_mode(GPIO_NUM_4, GPIO_FLOATING);
-            gpio_dump_io_configuration(stdout, (1ULL << GPIO_NUM_4));
 
             if (gpio_get_level(USB_INT) == 0)
             {
@@ -1316,12 +1313,12 @@ void app_main(void)
                 break;
             }
             ESP_LOGI(TAG, "Picture taken! Size: %d bytes", fb->len);
-            esp_camera_fb_return(fb); // Return the frame buffer to be reused
-            if ((ret = deinit_camera()) != ESP_OK)
-            {
-                ESP_LOGE(TAG, "Camera deinit failed");
-            }
+            // if ((ret = deinit_camera()) != ESP_OK)
+            // {
+            //     ESP_LOGE(TAG, "Camera deinit failed");
+            // }
             gpio_set_level(CAM_PWR, 1);
+            
             t_capture_end = esp_timer_get_time();
             ESP_LOGI(TAG, "Capture time: %lld ms", (long long)(t_capture_end - t_capture) / 1000);
             state = SYSTEM_STATE_SAVE;
@@ -1341,6 +1338,18 @@ void app_main(void)
             }
             snprintf(dir, sizeof(dir), "%04dy%02dm%02dd", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
             snprintf(filename, sizeof(filename), "%02dx%02dx%02d.jpg", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+
+            if(fb == NULL || fb->len == 0 || fb->buf == NULL)
+            {
+                ESP_LOGE(TAG, "Frame buffer is NULL, cannot save image");
+                state = SYSTEM_STATE_CLEANUP;
+                break;
+            }
+            else
+            {
+                ESP_LOGI(TAG, "Frame buffer is valid, proceeding to save image");
+            }
+
             ret = save_image_to_sd(fb, dir, filename);
             if (ret != ESP_OK)
             {
@@ -1482,7 +1491,7 @@ void app_main(void)
             // }
 
             
-            esp_sleep_enable_timer_wakeup(30 * 1000 * 1000);
+            esp_sleep_enable_timer_wakeup(5 * 1000 * 1000);
             esp_deep_sleep_start();
             break;
         case SYSTEM_STATE_USB_CONNECTED:
