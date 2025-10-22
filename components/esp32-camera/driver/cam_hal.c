@@ -156,9 +156,16 @@ static void cam_task(void *arg)
                             cam_obj->dma_half_buffer_size);
                     }
                     //Check for JPEG SOI in the first buffer. stop if not found
-                    if (cam_obj->jpeg_mode && cnt == 0 && cam_verify_jpeg_soi(frame_buffer_event->buf, frame_buffer_event->len) != 0) {
-                        ll_cam_stop(cam_obj);
-                        cam_obj->state = CAM_STATE_IDLE;
+                    if (cam_obj->jpeg_mode && cnt == 0) {
+                        int soi_idx = cam_verify_jpeg_soi(frame_buffer_event->buf, frame_buffer_event->len);
+                        if (soi_idx < 0) {
+                            // No SOI found at all -> abort frame
+                            ll_cam_stop(cam_obj);
+                            cam_obj->state = CAM_STATE_IDLE;
+                        } else if (soi_idx > 0) {
+                            // SOI found at non-zero offset — accept the frame and let cam_take trim to EOI later.
+                            ESP_LOGW(TAG, "SOI found at offset %d (not at 0), continuing", soi_idx);
+                        }
                     }
                     cnt++;
 

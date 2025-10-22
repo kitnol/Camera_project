@@ -1,0 +1,92 @@
+Guide on how to flash boards
+
+1. Instaling esptool
+
+Just write
+
+pip install esptool
+
+or
+
+py -m pip install esptool
+
+2. Instaling esp_idf_monitor
+
+pip install esp_idf_monitor
+
+or
+
+py -m pip install esp_idf_monitor
+
+3. You need to make sure that they are in boot mode
+
+By specifics of current firmware on the chips you will need to disamble the casing and take out a board (I will make a video on how to do it)
+
+Then you will need to hold a boot button (it is on a bottom righ from the chip) and while you holding it press reset button (it is on the left top)
+
+Now you are in the boot mode
+
+4. Prepare for uploading
+
+!IMPORTANT!
+Unzip archive with binary1 to some folder, there should be following folder structure:
+
+YOUR_FOLDER
+|--build
+|  |--bootloader
+|  |--partition_table
+
+If it not, text me, most likely I messed up somewhere
+
+5. Upload firmware
+
+Fisrt in console navigate to "YOUR_FOLDER" where the build folder is stored
+
+While camera disambeled connect it via USB cable to you computer and input following command
+
+python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\console.bin
+
+It should automitically identify port, especially if you do not have anything else connected
+If not add -p "PORT_NAME" after esptool
+Port you should be able to find in device maneger or similar (not sure about mac)
+
+6. Post uploading process
+
+Click a reset button (on the top left from the chip) again
+
+7. Setting up camera
+
+Start Serial communication by
+py -m esp_idf_monitor
+
+You will get some output and in the end will be
+esp32> 
+
+write command "login hello" (without quotes obiosly)
+It needed bc, otherwise no comands gonna work
+
+Then run following commands to set currrent time on RTC:
+
+init_rtc
+settime 2025 10 16 10 14
+
+settime setting time on RTC options follows as <year> <month> <day> <hour> <minute>
+if something not works, write "help" in terminal it will give you posible commands and it usage
+
+Then write following command to check if time setted:
+
+gettime
+
+If everything is correct end monitoring by pressing "Ctrl + ]" or "Cmd + ]"
+
+8. Unzip binary2 to different folder
+Folder structure should be same as in step 4
+
+9. Upload second binary follwing command:
+
+python -m esptool --chip esp32s3 -b 460800 --before default_reset --after hard_reset write_flash --flash_mode dio --flash_size 16MB --flash_freq 80m 0x0 build\bootloader\bootloader.bin 0x8000 build\partition_table\partition-table.bin 0x10000 build\console.bin
+
+10. Check if it works
+
+Unplug camera and plug it back wait for 10-30 seconds, camera should apear as FLASH DRIVE and you should be able to open picture
+If doing that, if you will have time, please charge them, just plug them to charge, it should be done in less then 2 hours, if you will not have time, just return cameras, and say to ARKadiusz and Casper to charge them
