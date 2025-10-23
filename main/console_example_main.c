@@ -53,32 +53,6 @@
 
 static const char *TAG = "camera_sd";
 #define PROMPT_STR CONFIG_IDF_TARGET
-#define VREG_ADDR 0x36
-
-// BMP header structures
-typedef struct __attribute__((packed))
-{
-    uint16_t type; // BM
-    uint32_t size; // File size
-    uint16_t reserved1;
-    uint16_t reserved2;
-    uint32_t offset; // Offset to image data
-} bmp_file_header_t;
-
-typedef struct __attribute__((packed))
-{
-    uint32_t size; // Header size
-    int32_t width;
-    int32_t height;
-    uint16_t planes;
-    uint16_t bits_per_pixel;
-    uint32_t compression;
-    uint32_t image_size;
-    int32_t x_pixels_per_meter;
-    int32_t y_pixels_per_meter;
-    uint32_t colors_used;
-    uint32_t colors_important;
-} bmp_info_header_t;
 
 // ON PCB CONNECTION
 #define CAM_PIN_PWDN 9  // Power down pin (not used)
@@ -139,7 +113,8 @@ typedef enum
     SYSTEM_STATE_CAPTURE,
     SYSTEM_STATE_SAVE,
     SYSTEM_STATE_CLEANUP,
-    SYSTEM_STATE_SLEEP,
+    SYSTEM_STATE_DAY_SLEEP,
+    SYSTEM_STATE_NIGHT_SLEEP,
     SYSTEM_STATE_USB_CONNECTED,
     SYSTEM_STATE_FLASH_DRIVE
 } system_state_t;
@@ -275,12 +250,12 @@ static esp_err_t init_sd_card(void)
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
         .format_if_mount_failed = false,
         .max_files = 3,
-        .allocation_unit_size = 16 * 1024,
+        .allocation_unit_size = 64 * 1024,
     };
 
     // Initialize SD card host
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
-    host.max_freq_khz = SDMMC_FREQ_52M; // Use high speed
+    host.max_freq_khz = 40*1000; // Use high speed
 
     // Initialize SD card slot configuration
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
@@ -329,6 +304,7 @@ esp_err_t save_image_to_sd(camera_fb_t *fb, const char *dir, const char *filenam
         ESP_LOGE(TAG, "Frame buffer is NULL, cannot save image");
         return ESP_FAIL;
     }
+    int64_t t_1 = esp_timer_get_time();
 
     struct stat st;
     if (stat(filepath, &st) != 0) {
@@ -344,6 +320,16 @@ esp_err_t save_image_to_sd(camera_fb_t *fb, const char *dir, const char *filenam
         return ESP_FAIL;
     }
 
+    int64_t t_2 = esp_timer_get_time();
+    ESP_LOGI(TAG, "Time taken to open file: %.lld ms", (t_2 - t_1) / 1000);
+
+    int ret_buf = setvbuf(file, NULL, _IOFBF, fb->len); // Set buffer size to 64KB
+
+    if(ret_buf != 0)
+    {
+        ESP_LOGW(TAG, "Failed to set file buffer with following error: %d", ret_buf);
+    }
+
     size_t written = fwrite(fb->buf, 1, fb->len, file);
     if (written != fb->len)
     {
@@ -352,7 +338,12 @@ esp_err_t save_image_to_sd(camera_fb_t *fb, const char *dir, const char *filenam
         return ESP_FAIL;
     }
 
+    int64_t t_3 = esp_timer_get_time();
+    ESP_LOGI(TAG, "Time taken to write file: %.lld ms", (t_3 - t_2) / 1000);
+
     fclose(file);
+    int64_t t_4 = esp_timer_get_time();
+    ESP_LOGI(TAG, "Time taken to close file: %.lld ms", (t_4 - t_3) / 1000);
     ESP_LOGI(TAG, "Image saved to %s (%u bytes)", filepath, (unsigned int)written);
     return ESP_OK;
 }
@@ -546,182 +537,6 @@ esp_err_t append_text_to_file(const char *path, const char *text)
 
     ESP_LOGI(TAG, "Text appended successfully");
     return ESP_OK;
-}
-
-/* IMU functions */
-
-// LSM6DSM I2C address (0x6A if SA0/SDO is low, 0x6B if high)
-#define LSM6DSM_ADDR 0x6A
-
-// LSM6DSM Register addresses
-#define LSM6DSM_CTRL1_XL 0x10  // Accelerometer control register
-#define LSM6DSM_CTRL2_G  0x11  // Gyroscope control register
-#define LSM6DSM_CTRL3_C  0x12  // Control register 3
-#define LSM6DSM_WHO_AM_I 0x0F  // Device identification register
-
-// I2C Configuration
-#define I2C_MASTER_NUM I2C_NUM_1
-#define I2C_MASTER_SDA_IO RTC_SDA
-#define I2C_MASTER_SCL_IO RTC_SCL
-#define I2C_MASTER_FREQ_HZ 400000
-#define I2C_MASTER_TIMEOUT_MS 1000
-
-// Global handles
-static i2c_master_bus_handle_t bus_handle = NULL;
-static i2c_master_dev_handle_t dev_handle = NULL;
-
-/**
- * @brief Initialize I2C master bus and device
- */
-static esp_err_t i2c_master_init(void)
-{
-    esp_err_t ret;
-    
-    // Configure I2C master bus
-    i2c_master_bus_config_t bus_config = {
-        .i2c_port = I2C_NUM_1,
-        .sda_io_num = I2C_MASTER_SDA_IO,
-        .scl_io_num = I2C_MASTER_SCL_IO,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    
-    ret = i2c_new_master_bus(&bus_config, &bus_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to create I2C bus: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    ESP_LOGI(TAG, "I2C master bus created");
-    
-    // Add LSM6DSM device to the bus
-    i2c_device_config_t dev_config = {
-        .dev_addr_length = I2C_ADDR_BIT_LEN_7,
-        .device_address = LSM6DSM_ADDR,
-        .scl_speed_hz = I2C_MASTER_FREQ_HZ,
-    };
-    
-    ret = i2c_master_bus_add_device(bus_handle, &dev_config, &dev_handle);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to add device to I2C bus: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    ESP_LOGI(TAG, "LSM6DSM device added to I2C bus");
-    
-    return ESP_OK;
-}
-
-/**
- * @brief Deinitialize I2C master
- */
-static esp_err_t i2c_master_deinit(void)
-{
-    esp_err_t ret = ESP_OK;
-    
-    if (dev_handle != NULL) {
-        ret = i2c_master_bus_rm_device(dev_handle);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to remove device: %s", esp_err_to_name(ret));
-        }
-        dev_handle = NULL;
-    }
-    
-    if (bus_handle != NULL) {
-        ret = i2c_del_master_bus(bus_handle);
-        if (ret != ESP_OK) {
-            ESP_LOGE(TAG, "Failed to delete bus: %s", esp_err_to_name(ret));
-        }
-        bus_handle = NULL;
-    }
-    
-    return ret;
-}
-
-/**
- * @brief Write a byte to LSM6DSM register
- */
-static esp_err_t lsm6dsm_write_register(uint8_t reg_addr, uint8_t data)
-{
-    uint8_t write_buf[2] = {reg_addr, data};
-    
-    esp_err_t ret = i2c_master_transmit(dev_handle, write_buf, sizeof(write_buf), -1);
-    
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "Wrote 0x%02X to register 0x%02X", data, reg_addr);
-    } else {
-        ESP_LOGE(TAG, "Failed to write to register 0x%02X: %s", reg_addr, esp_err_to_name(ret));
-    }
-    
-    return ret;
-}
-
-/**
- * @brief Read a byte from LSM6DSM register
- */
-static esp_err_t lsm6dsm_read_register(uint8_t reg_addr, uint8_t *data)
-{
-    esp_err_t ret = i2c_master_transmit_receive(dev_handle, &reg_addr, 1, data, 1, -1);
-    
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read from register 0x%02X: %s", reg_addr, esp_err_to_name(ret));
-    }
-    
-    return ret;
-}
-
-/**
- * @brief Check if LSM6DSM sensor is present
- */
-static esp_err_t lsm6dsm_check_sensor(void)
-{
-    uint8_t who_am_i;
-    esp_err_t ret = lsm6dsm_read_register(LSM6DSM_WHO_AM_I, &who_am_i);
-    
-    if (ret == ESP_OK) {
-        ESP_LOGI(TAG, "WHO_AM_I: 0x%02X (expected 0x6A)", who_am_i);
-        if (who_am_i == 0x6A) {
-            ESP_LOGI(TAG, "LSM6DSM found!");
-            return ESP_OK;
-        } else {
-            ESP_LOGE(TAG, "LSM6DSM not found! Wrong WHO_AM_I value");
-            return ESP_ERR_NOT_FOUND;
-        }
-    }
-    
-    return ret;
-}
-
-/**
- * @brief Power down LSM6DSM sensor
- */
-static esp_err_t lsm6dsm_power_down(void)
-{
-    esp_err_t ret;
-    
-    // Power down accelerometer (set ODR to 0)
-    ret = lsm6dsm_write_register(LSM6DSM_CTRL1_XL, 0x00);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    ESP_LOGI(TAG, "Accelerometer powered down");
-    
-    // Power down gyroscope (set ODR to 0)
-    ret = lsm6dsm_write_register(LSM6DSM_CTRL2_G, 0x00);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    ESP_LOGI(TAG, "Gyroscope powered down");
-    
-    // Optional: Read and modify CTRL3_C for additional power savings
-    uint8_t ctrl3;
-    ret = lsm6dsm_read_register(LSM6DSM_CTRL3_C, &ctrl3);
-    if (ret == ESP_OK) {
-        // Keep current settings, ensure no reset is triggered
-        ctrl3 &= ~0x01;
-        ret = lsm6dsm_write_register(LSM6DSM_CTRL3_C, ctrl3);
-    }
-    
-    return ret;
 }
 
 /* ----------------------------------- CONSOLE FUNCTION --------------------------------------- */
@@ -1236,8 +1051,6 @@ void app_main(void)
         {
         case SYSTEM_STATE_INIT:
             t_init = esp_timer_get_time();
-            gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
-            gpio_set_level(LED_PIN, 1);
             gpio_set_direction(USB_INT, GPIO_MODE_INPUT);
             gpio_reset_pin(CAM_PWR);
             gpio_hold_dis(CAM_PWR);
@@ -1245,10 +1058,6 @@ void app_main(void)
             gpio_set_direction(CAM_PWR, GPIO_MODE_OUTPUT);
             gpio_set_level(CAM_PWR, 1);
 
-            if (gpio_get_level(USB_INT) == 0)
-            {
-                login_state = LOGIN_NOT_ATEMPTED;
-            }
 
             if (gpio_get_level(USB_INT) == 1 && login_state != LOGIN_TIME_OUT && running_mode == 0)
             {
@@ -1260,20 +1069,19 @@ void app_main(void)
                 login_state = LOGIN_NOT_ATEMPTED;
             }
 
-            /*ret = read_time(&timeinfo);
+            ret = read_time(&timeinfo);
             if (ret != ESP_OK)
             {
                 ESP_LOGE(TAG, "Failed to read time from RTC");
             }
             else
             {
-                if (timeinfo.tm_hour >= 22) // Sleep between 10 PM and 6 AM
+                if (timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 6) // Sleep between 10 PM and 6 AM
                 {
-                    state = SYSTEM_STATE_SLEEP;
+                    state = SYSTEM_STATE_NIGHT_SLEEP;
                     break;
                 }
-            }*/
-
+            }
            
            if ((ret = init_sd_card()) != ESP_OK)
            {
@@ -1283,6 +1091,7 @@ void app_main(void)
             }
             
             gpio_set_level(CAM_PWR, 0);
+            vTaskDelay(pdMS_TO_TICKS(10)); // Wait for camera to power up
             if ((ret = init_camera()) != ESP_OK)
             {
                 ESP_LOGE(TAG, "Camera init failed");
@@ -1313,10 +1122,6 @@ void app_main(void)
                 break;
             }
             ESP_LOGI(TAG, "Picture taken! Size: %d bytes", fb->len);
-            // if ((ret = deinit_camera()) != ESP_OK)
-            // {
-            //     ESP_LOGE(TAG, "Camera deinit failed");
-            // }
             gpio_set_level(CAM_PWR, 1);
             
             t_capture_end = esp_timer_get_time();
@@ -1355,43 +1160,7 @@ void app_main(void)
             {
                 ESP_LOGE(TAG, "Failed to save image");
             }
-
-            // int adc_raw;
-            // int voltage;
-
-            // adc_oneshot_unit_init_cfg_t init_config = {
-            //     .unit_id = ADC_UNIT,
-            //     .ulp_mode = ADC_ULP_MODE_DISABLE,
-            // };
-            // ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config, &adc_handle));
-
-            // // Configure ADC channel
-            // adc_oneshot_chan_cfg_t config = {
-            //     .atten = ADC_ATTEN,
-            //     .bitwidth = ADC_BITWIDTH,
-            // };
-            // ESP_ERROR_CHECK(adc_oneshot_config_channel(adc_handle, ADC_CHANNEL, &config));
-
-            // do_calibration = adc_calibration_init(ADC_UNIT, ADC_CHANNEL, ADC_ATTEN);
-
-            // ret = adc_oneshot_read(adc_handle, ADC_CHANNEL, &adc_raw);
-            // if (ret == ESP_OK)
-            // {
-            //     // Convert to voltage if calibration is available
-            //     if (do_calibration)
-            //     {
-            //         ESP_ERROR_CHECK(adc_cali_raw_to_voltage(adc_cali_handle, adc_raw, &voltage));
-            //         voltage = voltage  * 1.4;
-            //         snprintf(adc_read, sizeof(adc_read), "%04dy%02dm%02dd_%02dx%02dx%02d: Bat Voltage: %04d mV\n", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec, voltage);
-            //     }
-            // }
-            // else
-            // {
-            //     snprintf(adc_read, sizeof(adc_read), "Voltage readings failed.\n");
-            // }
-
-            // append_text_to_file(MOUNT_POINT "/log.txt", adc_read);
-            // adc_calibration_deinit();
+            
             fb = NULL;
             state = SYSTEM_STATE_CLEANUP;
             break;
@@ -1403,35 +1172,11 @@ void app_main(void)
             {
                 ESP_LOGE(TAG, "SD card deinit failed");
             }
-            // Initialize I2C
-            // ESP_ERROR_CHECK(i2c_master_init());
-            // ESP_LOGI(TAG, "I2C initialized successfully");
-            
-            // Small delay to let sensor stabilize
-            //vTaskDelay(pdMS_TO_TICKS(10));
-            
-            // Check if sensor is present
-            // esp_err_t ret = lsm6dsm_check_sensor();
-            // if (ret != ESP_OK) {
-            //     ESP_LOGE(TAG, "LSM6DSM not found! Check connections.");
-            //     return;
-            // }
-            
-            // // Power down the sensor
-            // ret = lsm6dsm_power_down();
-            // if (ret == ESP_OK) {
-            //     ESP_LOGI(TAG, "LSM6DSM powered down successfully");
-            // } else {
-            //     ESP_LOGE(TAG, "Failed to power down LSM6DSM");
-            // }
 
-            // i2c_master_deinit();
-
-            state = SYSTEM_STATE_SLEEP;
+            state = SYSTEM_STATE_DAY_SLEEP;
             break;
 
-        case SYSTEM_STATE_SLEEP:
-            gpio_set_level(LED_PIN, 0);
+        case SYSTEM_STATE_DAY_SLEEP:
             gpio_set_level(CAM_PWR, 1);
             gpio_hold_en(CAM_PWR);
             gpio_deep_sleep_hold_en();
@@ -1443,10 +1188,8 @@ void app_main(void)
             gpio_reset_pin(GPIO_NUM_13);
             gpio_reset_pin(GPIO_NUM_14);
             gpio_reset_pin(GPIO_NUM_15);
-            //gpio_reset_pin(GPIO_NUM_25);
             gpio_reset_pin(GPIO_NUM_26);
             gpio_reset_pin(GPIO_NUM_27);
-           // gpio_reset_pin(GPIO_NUM_32);
             gpio_reset_pin(GPIO_NUM_33);
             gpio_reset_pin(GPIO_NUM_34);
             gpio_reset_pin(GPIO_NUM_35);
@@ -1458,42 +1201,60 @@ void app_main(void)
             ESP_LOGI(TAG, "Entering deep sleep");
             t_end = esp_timer_get_time();
             printf("Init time: %lld ms\n", (long long)(t_end - t_init) / 1000);
-            // ret = read_time(&timeinfo);
-            // if (gpio_get_level(USB_INT) && running_mode == 0)
-            // {
-            //     ESP_LOGI(TAG, "Charging, 5 minutes");
-            //     esp_sleep_enable_timer_wakeup(1 * 1000 * 1000);
-            //     esp_deep_sleep_start();
-            //     break;
-            // }
- 
-            // if (ret != ESP_OK)
-            // {
-            //     ESP_LOGE(TAG, "Failed to read time from RTC");
-            //     esp_sleep_enable_timer_wakeup(30 * 1000 * 1000);
-            //     esp_sleep_enable_ext0_wakeup(21, 1); // Wake up when GPIO 47 goes high
 
-            //     esp_deep_sleep_start();
-            //     break;
-            // }
+            ESP_LOGI(TAG, "Day time detected, sleeping for 30 seconds"); 
+            esp_sleep_enable_timer_wakeup(30 * 1000 * 1000); // 5 minutes
+            if(running_mode == 0)
+            {
+                esp_sleep_enable_ext0_wakeup(21, 1);             // Wake up when GPIO 21 goes high
+            }
 
-            // if (timeinfo.tm_hour >= 22) // Sleep between 10 PM and 6 AM
-            // {
-            //     ESP_LOGI(TAG, "Night time detected, sleeping for 30 minutes");
-            //     esp_sleep_enable_timer_wakeup(30 * 60 * 1000 * 1000); // 30 minutes
-            //     esp_sleep_enable_ext0_wakeup(21, 1);                  // Wake up when GPIO 47 goes high
-            // }
-            // else
-            // {
-            //     ESP_LOGI(TAG, "Day time detected, sleeping for 30 seconds");
-            //     esp_sleep_enable_timer_wakeup(30 * 1000 * 1000); // 5 minutes
-            //     //esp_sleep_enable_ext0_wakeup(21, 1);             // Wake up when GPIO 47 goes high
-            // }
-
-            
-            esp_sleep_enable_timer_wakeup(5 * 1000 * 1000);
             esp_deep_sleep_start();
             break;
+
+        case SYSTEM_STATE_NIGHT_SLEEP:
+            gpio_set_level(CAM_PWR, 1);
+            gpio_hold_en(CAM_PWR);
+            gpio_deep_sleep_hold_en();
+            vTaskDelay(pdMS_TO_TICKS(50));
+
+            gpio_reset_pin(GPIO_NUM_0);
+            gpio_reset_pin(GPIO_NUM_4);
+            gpio_reset_pin(GPIO_NUM_12);
+            gpio_reset_pin(GPIO_NUM_13);
+            gpio_reset_pin(GPIO_NUM_14);
+            gpio_reset_pin(GPIO_NUM_15);
+            gpio_reset_pin(GPIO_NUM_26);
+            gpio_reset_pin(GPIO_NUM_27);
+            gpio_reset_pin(GPIO_NUM_33);
+            gpio_reset_pin(GPIO_NUM_34);
+            gpio_reset_pin(GPIO_NUM_35);
+            gpio_reset_pin(GPIO_NUM_36);
+            gpio_reset_pin(GPIO_NUM_37);
+            gpio_reset_pin(GPIO_NUM_38);
+            gpio_reset_pin(GPIO_NUM_39);
+
+            ESP_LOGI(TAG, "Entering deep sleep");
+            t_end = esp_timer_get_time();
+            printf("Init time: %lld ms\n", (long long)(t_end - t_init) / 1000);
+
+            ESP_LOGI(TAG, "Day time detected, sleeping for 30 seconds"); 
+            esp_sleep_enable_timer_wakeup(30 * 1000 * 1000); // 30 minutes
+            if(gpio_get_level(USB_INT) == 1)
+            {
+                ESP_LOGI(TAG, "Charging, waking up when charger disconected");
+                esp_sleep_enable_ext0_wakeup(21, 0);             // Wake up when GPIO 21 goes low
+            }
+            else{
+                esp_sleep_enable_ext0_wakeup(21, 1);             // Wake up when GPIO 21 goes high
+            }
+
+            ESP_LOGI(TAG, "Night time detected, sleeping for 30 minutes");
+            esp_sleep_enable_timer_wakeup(30 * 60 * 1000 * 1000); // 30 minutes
+
+            esp_deep_sleep_start();
+            break;
+
         case SYSTEM_STATE_USB_CONNECTED:
             esp_console_repl_t *repl = NULL;
             esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
@@ -1526,7 +1287,7 @@ void app_main(void)
             if (ret != ESP_OK)
             {
                 ESP_LOGE(TAG, "Failed to start console REPL: %s", esp_err_to_name(ret));
-                state = SYSTEM_STATE_SLEEP;
+                state = SYSTEM_STATE_NIGHT_SLEEP;
                 break;
             }
 
@@ -1551,11 +1312,21 @@ void app_main(void)
                 login_state = LOGIN_TIME_OUT;
                 login_attempts = 0;
                 esp_console_deinit();
-                state = SYSTEM_STATE_SLEEP;
+            }
+
+            if(running_mode == 1)
+            {
+                state = SYSTEM_STATE_DAY_SLEEP;
                 break;
             }
 
-            state = SYSTEM_STATE_SLEEP;
+            if(login_state == LOGIN_TIME_OUT)
+            {
+                state = SYSTEM_STATE_NIGHT_SLEEP;
+                break;
+            }
+
+
             break;
         case SYSTEM_STATE_FLASH_DRIVE:
             vTaskDelay(pdMS_TO_TICKS(5000));
