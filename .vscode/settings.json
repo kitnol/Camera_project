@@ -5,6 +5,8 @@
         "tusb.h": "c",
         "usbd.h": "c",
         "tusb_common.h": "c",
-        "i2cdev.h": "c"
+        "i2cdev.h": "c",
+        "sccb.h": "c",
+        "sensor.h": "c"
     }
 }

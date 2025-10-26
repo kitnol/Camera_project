@@ -27,6 +27,8 @@
 #include "cam_hal.h"
 #include "esp_camera.h"
 #include "xclk.h"
+#include "esp_timer.h"
+
 #if CONFIG_OV2640_SUPPORT
 #include "ov2640.h"
 #endif
@@ -213,16 +215,15 @@ static esp_err_t camera_probe(const camera_config_t *config, camera_model_t *out
     vTaskDelay(10 / portTICK_PERIOD_MS);
 
     uint8_t slv_addr = SCCB_Probe();
-
     if (slv_addr == 0) {
         ret = ESP_ERR_NOT_FOUND;
         goto err;
     }
-
+    
     ESP_LOGI(TAG, "Detected camera at address=0x%02x", slv_addr);
     s_state->sensor.slv_addr = slv_addr;
     s_state->sensor.xclk_freq_hz = config->xclk_freq_hz;
-
+    
     /**
      * Read sensor ID and then initialize sensor
      * Attention: Some sensors have the same SCCB address. Therefore, several attempts may be made in the detection process
@@ -239,19 +240,18 @@ static esp_err_t camera_probe(const camera_config_t *config, camera_model_t *out
             }
         }
     }
-
     if (CAMERA_NONE == *out_camera_model) { //If no supported sensors are detected
         ESP_LOGE(TAG, "Detected camera not supported.");
         ret = ESP_ERR_NOT_SUPPORTED;
         goto err;
     }
-
+    
     ESP_LOGI(TAG, "Camera PID=0x%02x VER=0x%02x MIDL=0x%02x MIDH=0x%02x",
-             id->PID, id->VER, id->MIDH, id->MIDL);
-
-    ESP_LOGD(TAG, "Doing SW reset of sensor");
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-
+        id->PID, id->VER, id->MIDH, id->MIDL);
+        
+        ESP_LOGD(TAG, "Doing SW reset of sensor");
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+        
     return s_state->sensor.reset(&s_state->sensor);
 err :
     CAMERA_DISABLE_OUT_CLOCK();
@@ -313,7 +313,8 @@ esp_err_t esp_camera_init(const camera_config_t *config)
 
     s_state->sensor.status.framesize = frame_size;
     s_state->sensor.pixformat = pix_format;
-
+    
+    
     ESP_LOGD(TAG, "Setting frame size to %dx%d", resolution[frame_size].width, resolution[frame_size].height);
     if (s_state->sensor.set_framesize(&s_state->sensor, frame_size) != 0) {
         ESP_LOGE(TAG, "Failed to set frame size");

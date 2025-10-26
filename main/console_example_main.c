@@ -162,7 +162,7 @@ static camera_config_t camera_config = {
     .ledc_channel = LEDC_CHANNEL_0,
 
     .pixel_format = PIXFORMAT_JPEG,
-    .frame_size = FRAMESIZE_5MP,       // Reduced from UXGA (800x600 instead of 1600x1200)
+    .frame_size = FRAMESIZE_QSXGA,     // Reduced from UXGA (800x600 instead of 1600x1200)
     .jpeg_quality = 10,                // Lower quality to reduce memory usage
     .fb_count = 2,                     // Single frame buffer without PSRAM
     .fb_location = CAMERA_FB_IN_PSRAM, // Use DRAM instead of PSRAM
@@ -171,7 +171,6 @@ static camera_config_t camera_config = {
 
 esp_err_t init_camera(void)
 {
-
     esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK)
     {
@@ -1038,12 +1037,12 @@ void app_main(void)
     struct tm timeinfo;
 
     int64_t t_init = 0;
+    int64_t t_pwr_up = 0;
     int64_t t_capture = 0;
     int64_t t_capture_end = 0;
     int64_t t_save = 0;
     int64_t t_cleanup = 0;
     int64_t t_end = 0;
-
 
     while (1)
     {
@@ -1090,6 +1089,12 @@ void app_main(void)
                break;
             }
             
+            state = SYSTEM_STATE_CAPTURE;
+            break;
+            
+        case SYSTEM_STATE_CAPTURE:
+            t_pwr_up = esp_timer_get_time();
+
             gpio_set_level(CAM_PWR, 0);
             vTaskDelay(pdMS_TO_TICKS(10)); // Wait for camera to power up
             if ((ret = init_camera()) != ESP_OK)
@@ -1099,21 +1104,9 @@ void app_main(void)
                 gpio_set_level(CAM_PWR, 1);
                 break;
             }
-            state = SYSTEM_STATE_CAPTURE;
-            break;
 
-        case SYSTEM_STATE_CAPTURE:
             t_capture = esp_timer_get_time();
             fb = esp_camera_fb_get();
-            if (!fb)
-            {
-                ESP_LOGE(TAG, "Camera capture failed");
-                gpio_set_level(CAM_PWR, 1);
-                state = SYSTEM_STATE_CLEANUP;
-                break;
-            }
-            esp_camera_fb_return(fb); // Return the frame buffer to be reused
-            fb = esp_camera_fb_get(); // Capture again to ensure fresh image
             if (!fb)
             {
                 ESP_LOGE(TAG, "Camera capture failed");
@@ -1130,6 +1123,7 @@ void app_main(void)
             break;
 
         case SYSTEM_STATE_SAVE:
+            t_save = esp_timer_get_time();
             struct tm timeinfo;
             ret = read_time(&timeinfo);
             if (ret != ESP_OK)
@@ -1201,6 +1195,10 @@ void app_main(void)
             ESP_LOGI(TAG, "Entering deep sleep");
             t_end = esp_timer_get_time();
             printf("Init time: %lld ms\n", (long long)(t_end - t_init) / 1000);
+            printf("Power up time: %lld ms\n", (long long)(t_capture_end - t_pwr_up) / 1000);
+            printf("Capture time: %lld ms\n", (long long)(t_capture_end - t_capture) / 1000);
+            printf("Save time: %lld ms\n", (long long)(t_cleanup - t_save) / 1000);
+            printf("Cleanup time: %lld ms\n", (long long)(t_end - t_cleanup) / 1000);
 
             ESP_LOGI(TAG, "Day time detected, sleeping for 30 seconds"); 
             esp_sleep_enable_timer_wakeup(30 * 1000 * 1000); // 5 minutes
