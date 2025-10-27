@@ -29,6 +29,8 @@
 #include "xclk.h"
 #include "esp_timer.h"
 
+#define LED_PIN 15
+
 #if CONFIG_OV2640_SUPPORT
 #include "ov2640.h"
 #endif
@@ -156,7 +158,7 @@ static const sensor_func_t g_sensors[] = {
 static esp_err_t camera_probe(const camera_config_t *config, camera_model_t *out_camera_model)
 {
     esp_err_t ret = ESP_OK;
-    *out_camera_model = CAMERA_NONE;
+    //*out_camera_model = CAMERA_NONE;
     if (s_state != NULL) {
         return ESP_ERR_INVALID_STATE;
     }
@@ -284,12 +286,20 @@ esp_err_t esp_camera_init(const camera_config_t *config)
         return err;
     }
 
-    camera_model_t camera_model = CAMERA_NONE;
+    gpio_set_level(LED_PIN, 0); // Turn off LED
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(LED_PIN, 1); 
+
+    camera_model_t camera_model = CAMERA_OV5640;
     err = camera_probe(config, &camera_model);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera probe failed with error 0x%x(%s)", err, esp_err_to_name(err));
         goto fail;
     }
+
+    gpio_set_level(LED_PIN, 0); // Turn off LED
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(LED_PIN, 1); 
 
     framesize_t frame_size = (framesize_t) config->frame_size;
     pixformat_t pix_format = (pixformat_t) config->pixel_format;
@@ -339,6 +349,10 @@ esp_err_t esp_camera_init(const camera_config_t *config)
         s_state->sensor.set_quality(&s_state->sensor, config->jpeg_quality);
     }
     s_state->sensor.init_status(&s_state->sensor);
+
+    gpio_set_level(LED_PIN, 0); // Turn off LED
+    vTaskDelay(pdMS_TO_TICKS(10));
+    gpio_set_level(LED_PIN, 1); // Turn off LED
 
     cam_start();
 

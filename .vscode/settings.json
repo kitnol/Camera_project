@@ -7,6 +7,10 @@
         "tusb_common.h": "c",
         "i2cdev.h": "c",
         "sccb.h": "c",
-        "sensor.h": "c"
+        "sensor.h": "c",
+        "ll_cam.h": "c",
+        "esp_jpg_decode.h": "c",
+        "yuv.h": "c",
+        "img_converters.h": "c"
     }
 }
