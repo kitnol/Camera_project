@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/unistd.h>
 #include <sys/stat.h>
+#include <fcntl.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
@@ -165,28 +166,22 @@ static camera_config_t camera_config = {
     .ledc_timer = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
 
-    .pixel_format = PIXFORMAT_RGB565,
-    .frame_size = FRAMESIZE_XGA,     // Reduced from UXGA (800x600 instead of 1600x1200)
+    .pixel_format = PIXFORMAT_JPEG,
+    .frame_size = FRAMESIZE_QSXGA,     // Reduced from UXGA (800x600 instead of 1600x1200)
     .jpeg_quality = 10,                // Lower quality to reduce memory usage
-    .fb_count = 1,                     // Single frame buffer without PSRAM
+    .fb_count = 4,                     // Single frame buffer without PSRAM
     .fb_location = CAMERA_FB_IN_PSRAM, // Use DRAM instead of PSRAM
     .grab_mode = CAMERA_GRAB_LATEST,
 };
 
 esp_err_t init_camera(void)
 {
-    gpio_set_level(LED_PIN, 0); // Turn off LED
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(LED_PIN, 1); // Turn off LED
     esp_err_t err = esp_camera_init(&camera_config);
     if (err != ESP_OK)
     {
         ESP_LOGE(TAG, "Camera init failed with error 0x%x", err);
         return err;
     }
-    gpio_set_level(LED_PIN, 0); // Turn off LED
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(LED_PIN, 1); // Turn off LED
     // Get camera sensor
     sensor_t *s = esp_camera_sensor_get();
     if (s == NULL)
@@ -194,12 +189,9 @@ esp_err_t init_camera(void)
         ESP_LOGE(TAG, "Failed to get camera sensor");
         return ESP_FAIL;
     }
-    gpio_set_level(LED_PIN, 0); // Turn off LED
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(LED_PIN, 1); // Turn off LED
 
     // Configure camera settings for better quality
-    s->set_brightness(s, 2);                 // -2 to 2
+    s->set_brightness(s, 1);                 // -2 to 2
     s->set_contrast(s, 0);                   // -2 to 2
     s->set_saturation(s, 0);                 // -2 to 2
     s->set_special_effect(s, 0);             // 0 to 6 (0 - No Effect, 1 - Negative, 2 - Grayscale, 3 - Red Tint, 4 - Green Tint, 5 - Blue Tint, 6 - Sepia)
@@ -223,9 +215,6 @@ esp_err_t init_camera(void)
     s->set_colorbar(s, 0);                   // 0 = disable , 1 = enable
 
     sens = s;
-    gpio_set_level(LED_PIN, 0); // Turn off LED
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(LED_PIN, 1); // Turn off LED
     return ESP_OK;
 }
 
@@ -326,8 +315,9 @@ esp_err_t save_image_to_sd(camera_fb_t *fb, const char *dir, const char *filenam
 
     snprintf(filepath, sizeof(filepath), "%s/%s/%s", MOUNT_POINT, dir, filename);
 
-    FILE *file = fopen(filepath, "wb");
-    if (file == NULL)
+    const int flags = O_WRONLY | O_CREAT | O_TRUNC;
+    int fd = open(filepath, flags, 0666);
+    if (fd == -1)
     {
         ESP_LOGE(TAG, "Failed to open file for writing: %s", filepath);
         return ESP_FAIL;
@@ -335,41 +325,116 @@ esp_err_t save_image_to_sd(camera_fb_t *fb, const char *dir, const char *filenam
 
     int64_t t_2 = esp_timer_get_time();
     ESP_LOGI(TAG, "Time taken to open file: %.lld ms", (t_2 - t_1) / 1000);
-
-    int ret_buf = setvbuf(file, NULL, _IOFBF, fb->len); // Set buffer size to 64KB
-
-    if(ret_buf != 0)
-    {
-        ESP_LOGW(TAG, "Failed to set file buffer with following error: %d", ret_buf);
-    }
     
-    uint8_t *bmp_data;  // Will hold the BMP data
-    size_t bmp_len;     // Will hold the BMP data length
-    int64_t t_start_conv = esp_timer_get_time();
-    if (frame2bmp(fb, &bmp_data, &bmp_len) == false) {
-        ESP_LOGW(TAG, "BMP conversion failed");
-        fclose(file);
-        return ESP_FAIL;
-    }
-    int64_t t_end_conv = esp_timer_get_time();
-    ESP_LOGI(TAG, "Time taken to convert to BMP: %.lld ms", (t_end_conv - t_start_conv) / 1000);
+    // uint8_t *bmp_data;  // Will hold the BMP data
+    // size_t bmp_len;     // Will hold the BMP data length
+    // int64_t t_start_conv = esp_timer_get_time();
+    // if (frame2bmp(fb, &bmp_data, &bmp_len) == false) {
+    //     ESP_LOGW(TAG, "BMP conversion failed");
+    //     fclose(file);
+    //     return ESP_FAIL;
+    // }
+    // int64_t t_end_conv = esp_timer_get_time();
+    // ESP_LOGI(TAG, "Time taken to convert to BMP: %.lld ms", (t_end_conv - t_start_conv) / 1000);
 
-    size_t written = fwrite(bmp_data, 1, bmp_len, file);
-    if (written != bmp_len)
+    int ret = write(fd, fb->buf, fb->len);
+    if (ret != fb->len)
     {
         ESP_LOGE(TAG, "Failed to write complete image data to file: %s", filepath);
-        fclose(file);
+        close(fd);
         return ESP_FAIL;
     }
 
     int64_t t_3 = esp_timer_get_time();
     ESP_LOGI(TAG, "Time taken to write file: %.lld ms", (t_3 - t_2) / 1000);
 
-    fclose(file);
+    close(fd);
+
     int64_t t_4 = esp_timer_get_time();
     ESP_LOGI(TAG, "Time taken to close file: %.lld ms", (t_4 - t_3) / 1000);
-    ESP_LOGI(TAG, "Image saved to %s (%u bytes)", filepath, (unsigned int)written);
+    ESP_LOGI(TAG, "Image saved to %s (%u bytes)", filepath, (unsigned int)ret);
     return ESP_OK;
+}
+
+#define DMA_BUFFER_SIZE (64 * 1024)
+
+esp_err_t write_psram_to_sd_fast(const char *dir, const char *filename, uint8_t *psram_data, size_t data_size)
+{
+    FILE *f = NULL;
+    uint8_t *dma_buffer = NULL;
+    esp_err_t ret = ESP_OK;
+    int64_t start_time, end_time;
+
+    char filepath[200];
+    snprintf(filepath, sizeof(filepath), "%s/%s", MOUNT_POINT, dir);
+
+    struct stat st;
+    if (stat(filepath, &st) != 0) {
+        mkdir(filepath, 0700);  // Create directory if doesn't exist
+    }
+
+    snprintf(filepath, sizeof(filepath), "%s/%s/%s", MOUNT_POINT, dir, filename);
+    
+    ESP_LOGI(TAG, "Writing %zu bytes from PSRAM to SD card: %s", data_size, filepath);
+    
+    // Allocate DMA-capable buffer in internal RAM
+    dma_buffer = (uint8_t*)heap_caps_malloc(DMA_BUFFER_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    if (dma_buffer == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate DMA buffer");
+        return ESP_ERR_NO_MEM;
+    }
+    
+    // Open file with write buffering disabled for more predictable performance
+    f = fopen(filepath, "wb");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file for writing");
+        ret = ESP_FAIL;
+        goto cleanup;
+    }
+
+    start_time = esp_timer_get_time();
+    
+    // Disable buffering for more direct control
+    setvbuf(f, NULL, _IONBF, 0);
+    
+    // Write in chunks
+    size_t bytes_written = 0;
+    size_t bytes_remaining = data_size;
+    
+    while (bytes_remaining > 0) {
+        size_t chunk_size = (bytes_remaining > DMA_BUFFER_SIZE) ? DMA_BUFFER_SIZE : bytes_remaining;
+        
+        // Copy from PSRAM to DMA buffer
+        memcpy(dma_buffer, psram_data + bytes_written, chunk_size);
+        
+        // Write to SD card
+        size_t written = fwrite(dma_buffer, 1, chunk_size, f);
+        if (written != chunk_size) {
+            ESP_LOGE(TAG, "Write error: expected %zu, wrote %zu", chunk_size, written);
+            ret = ESP_FAIL;
+            goto cleanup;
+        }
+        
+        bytes_written += written;
+        bytes_remaining -= written;
+    }
+    
+    // Ensure data is flushed to SD card
+    fflush(f);
+    fsync(fileno(f));
+    
+    end_time = esp_timer_get_time();
+    float duration_ms = (end_time - start_time) / 1000.0f;
+    float speed_kbps = (data_size / 1024.0f) / (duration_ms / 1000.0f);
+    
+    ESP_LOGI(TAG, "Write complete: %zu bytes in %.2f ms (%.2f KB/s)", 
+             data_size, duration_ms, speed_kbps);
+    
+cleanup:
+    if (f) fclose(f);
+    if (dma_buffer) free(dma_buffer);
+    
+    return ret;
 }
 
 esp_err_t deinit_sdcard(void)
@@ -389,12 +454,6 @@ esp_err_t deinit_sdcard(void)
             ESP_LOGI(TAG, "SD card unmounted successfully");
         }
         card_handle = NULL;
-    }
-
-    ret = sdmmc_host_deinit();
-    if (ret != ESP_OK)
-    {
-        ESP_LOGW(TAG, "Failed to free SPI bus: %s", esp_err_to_name(ret));
     }
 
     return ret;
@@ -1076,10 +1135,7 @@ void app_main(void)
         case SYSTEM_STATE_INIT:
             esp_wifi_stop();
             t_init = esp_timer_get_time();
-            gpio_set_direction(LED_PIN, GPIO_MODE_OUTPUT);
-            gpio_set_level(LED_PIN, 0); // Turn off LED
-            vTaskDelay(pdMS_TO_TICKS(10));
-            gpio_set_level(LED_PIN, 1); // Turn off LED
+
             gpio_set_direction(USB_INT, GPIO_MODE_INPUT);
             gpio_reset_pin(CAM_PWR);
             gpio_hold_dis(CAM_PWR);
@@ -1124,9 +1180,7 @@ void app_main(void)
             
         case SYSTEM_STATE_CAPTURE:
             t_pwr_up = esp_timer_get_time();
-            gpio_set_level(LED_PIN, 0); // Turn off LED
-            vTaskDelay(pdMS_TO_TICKS(10));
-            gpio_set_level(LED_PIN, 1); // Turn off LED
+
             gpio_set_level(CAM_PWR, 0);
             vTaskDelay(pdMS_TO_TICKS(10)); // Wait for camera to power up
             if ((ret = init_camera()) != ESP_OK)
@@ -1136,10 +1190,9 @@ void app_main(void)
                 gpio_set_level(CAM_PWR, 1);
                 break;
             }
-            gpio_set_level(LED_PIN, 0); // Turn off LED
-            vTaskDelay(pdMS_TO_TICKS(10));
-            gpio_set_level(LED_PIN, 1); // Turn off LED
+
             t_capture = esp_timer_get_time();
+
             fb = esp_camera_fb_get();
             if (!fb)
             {
@@ -1157,9 +1210,6 @@ void app_main(void)
             break;
 
         case SYSTEM_STATE_SAVE:
-            gpio_set_level(LED_PIN, 0); // Turn off LED
-            vTaskDelay(pdMS_TO_TICKS(10));
-            gpio_set_level(LED_PIN, 1); // Turn off LED
             t_save = esp_timer_get_time();
             struct tm timeinfo;
             ret = read_time(&timeinfo);
@@ -1173,7 +1223,7 @@ void app_main(void)
                 timeinfo.tm_min = 12;
             }
             snprintf(dir, sizeof(dir), "%04dy%02dm%02dd", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
-            snprintf(filename, sizeof(filename), "%02dx%02dx%02d.bmp", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+            snprintf(filename, sizeof(filename), "%02dx%02dx%02d.jpg", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 
             if(fb == NULL || fb->len == 0 || fb->buf == NULL)
             {
@@ -1185,8 +1235,8 @@ void app_main(void)
             {
                 ESP_LOGI(TAG, "Frame buffer is valid, proceeding to save image");
             }
-
-            ret = save_image_to_sd(fb, dir, filename);
+            write_psram_to_sd_fast(dir, filename, fb->buf, fb->len);
+            //ret = save_image_to_sd(fb, dir, filename);
             if (ret != ESP_OK)
             {
                 ESP_LOGE(TAG, "Failed to save image");
@@ -1197,9 +1247,7 @@ void app_main(void)
             break;
 
         case SYSTEM_STATE_CLEANUP:
-            gpio_set_level(LED_PIN, 0); // Turn off LED
-            vTaskDelay(pdMS_TO_TICKS(10));
-            gpio_set_level(LED_PIN, 1); // Turn off LED
+            t_cleanup = esp_timer_get_time();
             
             if ((ret = deinit_sdcard()) != ESP_OK)
             {
@@ -1210,32 +1258,11 @@ void app_main(void)
             break;
 
         case SYSTEM_STATE_DAY_SLEEP:
-            gpio_set_level(LED_PIN, 0); // Turn off LED
-            vTaskDelay(pdMS_TO_TICKS(10));
-            gpio_set_level(LED_PIN, 1); // Turn on LED
-
             gpio_set_level(CAM_PWR, 1);
             gpio_hold_en(CAM_PWR);
             gpio_deep_sleep_hold_en();
-            vTaskDelay(pdMS_TO_TICKS(50));
+            vTaskDelay(pdMS_TO_TICKS(10));
 
-            gpio_reset_pin(GPIO_NUM_0);
-            gpio_reset_pin(GPIO_NUM_4);
-            gpio_reset_pin(GPIO_NUM_12);
-            gpio_reset_pin(GPIO_NUM_13);
-            gpio_reset_pin(GPIO_NUM_14);
-            gpio_reset_pin(GPIO_NUM_15);
-            gpio_reset_pin(GPIO_NUM_26);
-            gpio_reset_pin(GPIO_NUM_27);
-            gpio_reset_pin(GPIO_NUM_33);
-            gpio_reset_pin(GPIO_NUM_34);
-            gpio_reset_pin(GPIO_NUM_35);
-            gpio_reset_pin(GPIO_NUM_36);
-            gpio_reset_pin(GPIO_NUM_37);
-            gpio_reset_pin(GPIO_NUM_38);
-            gpio_reset_pin(GPIO_NUM_39);
-
-            ESP_LOGI(TAG, "Entering deep sleep");
             t_end = esp_timer_get_time();
             printf("Init time: %lld ms\n", (long long)(t_end - t_init) / 1000);
             printf("Power up time: %lld ms\n", (long long)(t_capture_end - t_pwr_up) / 1000);
@@ -1243,20 +1270,13 @@ void app_main(void)
             printf("Save time: %lld ms\n", (long long)(t_cleanup - t_save) / 1000);
             printf("Cleanup time: %lld ms\n", (long long)(t_end - t_cleanup) / 1000);
 
-            ESP_LOGI(TAG, "Day time detected, sleeping for 30 seconds"); 
-            esp_sleep_enable_timer_wakeup(5 * 1000 * 1000); // 5 minutes
+            // ESP_LOGI(TAG, "Day time detected, sleeping for 30 seconds"); 
+            esp_sleep_enable_timer_wakeup(30 * 1000 * 1000); // 5 minutes
             if(running_mode == 0)
             {
                 esp_sleep_enable_ext0_wakeup(21, 1);             // Wake up when GPIO 21 goes high
             }
-            
-            gpio_set_level(LED_PIN, 0); // Turn off LED
-            vTaskDelay(pdMS_TO_TICKS(10));
-            gpio_set_level(LED_PIN, 1); // Turn on LED
-            vTaskDelay(pdMS_TO_TICKS(10));
-            gpio_set_level(LED_PIN, 0); // Turn off LED
-
-
+        
             esp_deep_sleep_start();
             break;
 

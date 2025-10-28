@@ -155,7 +155,7 @@ static const sensor_func_t g_sensors[] = {
 #endif
 };
 
-static esp_err_t camera_probe(const camera_config_t *config, camera_model_t *out_camera_model)
+static esp_err_t camera_probe(const camera_config_t *config, camera_model_t *out_camera_model, uint8_t slv_addr)
 {
     esp_err_t ret = ESP_OK;
     //*out_camera_model = CAMERA_NONE;
@@ -213,14 +213,17 @@ static esp_err_t camera_probe(const camera_config_t *config, camera_model_t *out
         vTaskDelay(10 / portTICK_PERIOD_MS);
     }
 
-    ESP_LOGD(TAG, "Searching for camera address");
-    vTaskDelay(10 / portTICK_PERIOD_MS);
-
-    uint8_t slv_addr = SCCB_Probe();
     if (slv_addr == 0) {
-        ret = ESP_ERR_NOT_FOUND;
-        goto err;
+        ESP_LOGD(TAG, "Searching for camera address");
+        vTaskDelay(10 / portTICK_PERIOD_MS);
+        slv_addr = SCCB_Probe();
+        if(slv_addr == 0) {
+            ESP_LOGE(TAG, "No camera found");
+            ret = ESP_ERR_NOT_FOUND;
+            goto err;
+        }
     }
+
     
     ESP_LOGI(TAG, "Detected camera at address=0x%02x", slv_addr);
     s_state->sensor.slv_addr = slv_addr;
@@ -286,20 +289,12 @@ esp_err_t esp_camera_init(const camera_config_t *config)
         return err;
     }
 
-    gpio_set_level(LED_PIN, 0); // Turn off LED
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(LED_PIN, 1); 
-
     camera_model_t camera_model = CAMERA_OV5640;
-    err = camera_probe(config, &camera_model);
+        err = camera_probe(config, &camera_model, 0);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Camera probe failed with error 0x%x(%s)", err, esp_err_to_name(err));
         goto fail;
     }
-
-    gpio_set_level(LED_PIN, 0); // Turn off LED
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(LED_PIN, 1); 
 
     framesize_t frame_size = (framesize_t) config->frame_size;
     pixformat_t pix_format = (pixformat_t) config->pixel_format;
