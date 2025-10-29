@@ -281,7 +281,7 @@ static esp_err_t init_sd_card(void)
 
     ret = sdmmc_host_init();
     ESP_ERROR_CHECK(ret);
-    ret = sdmmc_host_init_slot(SDMMC_HOST_SLOT_1, &slot_config_g);
+    ret = sdmmc_host_init_slot(SDMMC_HOST_SLOT_1, &slot_config);
     ESP_ERROR_CHECK(ret);
 
     // Mount filesystem
@@ -454,44 +454,28 @@ cleanup:
     return ret;
 }
 
-static QueueHandle_t time_queue;
-static QueueHAndle_t file_queue;
+static QueueHandle_t time_queue = NULL;
+static QueueHandle_t file_queue = NULL;
 
 typedef enum
 {
-    SD_STATE_INIT,
     SD_STATE_TIME_RECEIVE,
-    SD_STATE_UNMOUNTED,
     SD_STATE_OPEN,
     SD_STATE_SEND_FILE,
-    SD_STATE_ERROR,
+    SD_STATE_ERROR
 } sd_state_t;
 
 void sd_hadler(void* arg)
 {
-    esp_err_t ret;
     FILE *f = NULL;
-    struct tm received_time;
+    struct tm timeinfo;
     char dir[64];
     char filepath[200];
-    sd_state_t sd_state = SD_STATE_INIT;
+    sd_state_t sd_state = SD_STATE_TIME_RECEIVE;
     int recieveAttempts = 0;
     while (1) {
         switch (sd_state) {
-        case SD_STATE_INIT:
-            /* code */
-            if ((ret = init_sd_card()) != ESP_OK)
-            {
-                ESP_LOGE(TAG, "SD card init failed");
-                sd_state = SD_STATE_ERROR;
-                sd_status = SD_MOUNT_ERROR;
-                break;
-            }
-            sd_status = SD_MOUNTED;
-            sd_state = SD_STATE_TIME_RECEIVE;
-            break;
         case SD_STATE_TIME_RECEIVE:
-
             if (time_queue == NULL) {
                 if(recieveAttempts > 100) {
                     ESP_LOGE(TAG, "Time queue not created, moving to error state");
@@ -503,7 +487,7 @@ void sd_hadler(void* arg)
                 vTaskDelay(pdMS_TO_TICKS(10));
                 break;
             }
-            else if (xQueueReceive(time_queue, &received_time, portMAX_DELAY)) {
+            else if (xQueueReceive(time_queue, &timeinfo, pdMS_TO_TICKS(100))) {
                 sd_state = SD_STATE_OPEN;
                 vQueueDelete(time_queue);
                 time_queue = NULL;
@@ -543,7 +527,7 @@ void sd_hadler(void* arg)
             sd_state = SD_STATE_SEND_FILE;
             break;
         case SD_STATE_SEND_FILE:
-            file_queue = xQueueCreate(10, sizeof(struct FILE*));
+            file_queue = xQueueCreate(3, sizeof(struct FILE*));
             if (file_queue == NULL) {
                 ESP_LOGE(TAG, "Failed to create file queue");
                 sd_state = SD_STATE_ERROR;
@@ -551,9 +535,27 @@ void sd_hadler(void* arg)
             }
             if (xQueueSend(file_queue, &f, 0) != pdPASS) {
                 ESP_LOGE(TAG, "Failed to send time to queue");
+                sd_state = SD_STATE_ERROR;
+                break;
             }
-            
-        
+            vTaskDelete(NULL);
+            break;
+        case SD_STATE_ERROR:
+            if (f != NULL) {
+                fclose(f);
+                f = NULL;
+            }
+            if (time_queue != NULL) {
+                vQueueDelete(time_queue);
+                time_queue = NULL;
+            }
+            if (file_queue != NULL) {
+                vQueueDelete(file_queue);
+                file_queue = NULL;
+            }
+            vTaskDelete(NULL);
+            sd_state = SD_STATE_TIME_RECEIVE;
+            break;        
         }
     }
 
@@ -1237,7 +1239,8 @@ void app_main(void)
     esp_err_t ret = ESP_OK;
     char filename[200];
     char dir[200];
-    char adc_read[200];
+
+    uint8_t *dma_buffer = NULL;
     FILE *f = NULL;
     int reciveAttempts = 0;
     camera_fb_t *fb = NULL;
@@ -1285,15 +1288,22 @@ void app_main(void)
             }
             else
             {
-                if (timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 6) // Sleep between 10 PM and 6 AM
+                if (timeinfo.tm_hour >= 23 || timeinfo.tm_hour < 6) // Sleep between 10 PM and 6 AM
                 {
                     state = SYSTEM_STATE_NIGHT_SLEEP;
                     break;
                 }
             }
 
+            if ((ret = init_sd_card()) != ESP_OK)
+            {
+                ESP_LOGE(TAG, "SD card init failed");
+                state = SYSTEM_STATE_CLEANUP;
+                break;
+            }
+
             xTaskCreatePinnedToCore(sd_hadler, "sd_hadler", 4096, NULL, 2, NULL, 1);
-            time_queue = xQueueCreate(10, sizeof(struct tm));
+            time_queue = xQueueCreate(3, sizeof(struct tm));
             if (time_queue == NULL) {
                 ESP_LOGE(TAG, "Failed to create queue");
             } else {
@@ -1306,16 +1316,6 @@ void app_main(void)
             break;
             
         case SYSTEM_STATE_CAPTURE:
-
-            if(sd_status == SD_STATE_ERROR) {
-                ESP_LOGE(TAG, "SD card error detected, moving to cleanup state");
-                state = SYSTEM_STATE_CLEANUP;
-                break;
-            }
-            else if(sd_status != SD_STATE_MOUNTED) {
-                vTaskDelay(pdMS_TO_TICKS(5));
-                break;
-            }
 
             t_pwr_up = esp_timer_get_time();
 
@@ -1351,8 +1351,24 @@ void app_main(void)
             if(file_queue == NULL) {
                 vTaskDelay(pdMS_TO_TICKS(10));
                 reciveAttempts++;
-                if(reciveAttempts > 100) {
-                    ESP_LOGE(TAG, "File queue not created, moving to cleanup state");
+                if(reciveAttempts > 500) {
+                    ESP_LOGE(TAG, "File queue not created, moving to cleanup state %d", reciveAttempts);
+                    state = SYSTEM_STATE_CLEANUP;
+                }
+                break;
+            }
+            else if (xQueueReceive(file_queue, &f, pdMS_TO_TICKS(100))) {
+                vQueueDelete(file_queue);
+                file_queue = NULL;
+                reciveAttempts = 0;
+            }
+            else{
+                vTaskDelay(pdMS_TO_TICKS(10));
+                reciveAttempts++;
+                if(reciveAttempts > 600) {
+                    ESP_LOGE(TAG, "File not received, moving to cleanup state");
+                    vQueueDelete(file_queue);
+                    file_queue = NULL;
                     state = SYSTEM_STATE_CLEANUP;
                 }
                 break;
@@ -1364,16 +1380,46 @@ void app_main(void)
                 state = SYSTEM_STATE_CLEANUP;
                 break;
             }
-            else
-            {
-                ESP_LOGI(TAG, "Frame buffer is valid, proceeding to save image");
+
+            dma_buffer = (uint8_t*)heap_caps_malloc(DMA_BUFFER_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+            if (dma_buffer == NULL) {
+                ESP_LOGE(TAG, "Failed to allocate DMA buffer");
+                state = SYSTEM_STATE_CLEANUP;
+                break;
             }
-            write_psram_to_sd_fast(dir, filename, fb->buf, fb->len);
-            //ret = save_image_to_sd(fb, dir, filename);
-            if (ret != ESP_OK)
-            {
-                ESP_LOGE(TAG, "Failed to save image");
+
+            // Disable buffering for more direct control
+            setvbuf(f, NULL, _IONBF, 0);
+            
+            // Write in chunks
+            size_t bytes_written = 0;
+            size_t bytes_remaining = fb->len;
+            
+            while (bytes_remaining > 0) {
+                size_t chunk_size = (bytes_remaining > DMA_BUFFER_SIZE) ? DMA_BUFFER_SIZE : bytes_remaining;
+                
+                // Copy from PSRAM to DMA buffer
+                memcpy(dma_buffer, fb->buf + bytes_written, chunk_size);
+                
+                // Write to SD card
+                size_t written = fwrite(dma_buffer, 1, chunk_size, f);
+                if (written != chunk_size) {
+                    ESP_LOGE(TAG, "Write error: expected %zu, wrote %zu", chunk_size, written);
+                    ret = ESP_FAIL;
+                    goto cleanup;
+                }
+                
+                bytes_written += written;
+                bytes_remaining -= written;
             }
+            
+            // Ensure data is flushed to SD card
+            fflush(f);
+            fsync(fileno(f));
+            
+            cleanup:
+                if (f) fclose(f);
+                if (dma_buffer) free(dma_buffer);
             
             fb = NULL;
             state = SYSTEM_STATE_CLEANUP;
