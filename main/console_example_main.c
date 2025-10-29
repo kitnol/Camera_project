@@ -114,6 +114,15 @@ static bool sd_card_mounted = false;
 
 typedef enum
 {
+    SD_MOUNTED,
+    SD_NOT_MOUNTED,
+    SD_MOUNT_ERROR
+} sd_status_t;
+
+sd_status_t sd_status = SD_NOT_MOUNTED;
+
+typedef enum
+{
     SYSTEM_STATE_INIT,
     SYSTEM_STATE_CAPTURE,
     SYSTEM_STATE_SAVE,
@@ -270,6 +279,11 @@ static esp_err_t init_sd_card(void)
     slot_config.d3 = PIN_NUM_CS;
     slot_config.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
 
+    ret = sdmmc_host_init();
+    ESP_ERROR_CHECK(ret);
+    ret = sdmmc_host_init_slot(SDMMC_HOST_SLOT_1, &slot_config_g);
+    ESP_ERROR_CHECK(ret);
+
     // Mount filesystem
     ret = esp_vfs_fat_sdmmc_mount(MOUNT_POINT, &host, &slot_config, &mount_config, &card_handle);
 
@@ -372,10 +386,23 @@ esp_err_t write_psram_to_sd_fast(const char *dir, const char *filename, uint8_t 
     if (stat(filepath, &st) != 0) {
         mkdir(filepath, 0700);  // Create directory if doesn't exist
     }
-
+    
     snprintf(filepath, sizeof(filepath), "%s/%s/%s", MOUNT_POINT, dir, filename);
     
     ESP_LOGI(TAG, "Writing %zu bytes from PSRAM to SD card: %s", data_size, filepath);
+    
+    // Open file with write buffering disabled for more predictable performance
+    int64_t t_open1 = esp_timer_get_time();
+    f = fopen(filepath, "wb");
+    if (f == NULL) {
+        ESP_LOGE(TAG, "Failed to open file for writing");
+        ret = ESP_FAIL;
+        goto cleanup;
+    }
+    int64_t t_open2 = esp_timer_get_time();
+    ESP_LOGI(TAG, "Time taken to open file: %.2f ms", (t_open2 - t_open1) / 1000.0f);
+
+    start_time = esp_timer_get_time();
     
     // Allocate DMA-capable buffer in internal RAM
     dma_buffer = (uint8_t*)heap_caps_malloc(DMA_BUFFER_SIZE, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
@@ -383,17 +410,7 @@ esp_err_t write_psram_to_sd_fast(const char *dir, const char *filename, uint8_t 
         ESP_LOGE(TAG, "Failed to allocate DMA buffer");
         return ESP_ERR_NO_MEM;
     }
-    
-    // Open file with write buffering disabled for more predictable performance
-    f = fopen(filepath, "wb");
-    if (f == NULL) {
-        ESP_LOGE(TAG, "Failed to open file for writing");
-        ret = ESP_FAIL;
-        goto cleanup;
-    }
 
-    start_time = esp_timer_get_time();
-    
     // Disable buffering for more direct control
     setvbuf(f, NULL, _IONBF, 0);
     
@@ -435,6 +452,111 @@ cleanup:
     if (dma_buffer) free(dma_buffer);
     
     return ret;
+}
+
+static QueueHandle_t time_queue;
+static QueueHAndle_t file_queue;
+
+typedef enum
+{
+    SD_STATE_INIT,
+    SD_STATE_TIME_RECEIVE,
+    SD_STATE_UNMOUNTED,
+    SD_STATE_OPEN,
+    SD_STATE_SEND_FILE,
+    SD_STATE_ERROR,
+} sd_state_t;
+
+void sd_hadler(void* arg)
+{
+    esp_err_t ret;
+    FILE *f = NULL;
+    struct tm received_time;
+    char dir[64];
+    char filepath[200];
+    sd_state_t sd_state = SD_STATE_INIT;
+    int recieveAttempts = 0;
+    while (1) {
+        switch (sd_state) {
+        case SD_STATE_INIT:
+            /* code */
+            if ((ret = init_sd_card()) != ESP_OK)
+            {
+                ESP_LOGE(TAG, "SD card init failed");
+                sd_state = SD_STATE_ERROR;
+                sd_status = SD_MOUNT_ERROR;
+                break;
+            }
+            sd_status = SD_MOUNTED;
+            sd_state = SD_STATE_TIME_RECEIVE;
+            break;
+        case SD_STATE_TIME_RECEIVE:
+
+            if (time_queue == NULL) {
+                if(recieveAttempts > 100) {
+                    ESP_LOGE(TAG, "Time queue not created, moving to error state");
+                    vQueueDelete(time_queue);
+                    time_queue = NULL;
+                    sd_state = SD_STATE_ERROR;
+                }
+                recieveAttempts++;
+                vTaskDelay(pdMS_TO_TICKS(10));
+                break;
+            }
+            else if (xQueueReceive(time_queue, &received_time, portMAX_DELAY)) {
+                sd_state = SD_STATE_OPEN;
+                vQueueDelete(time_queue);
+                time_queue = NULL;
+                recieveAttempts = 0;
+                break;
+            }
+            else{
+                if(recieveAttempts > 150) {
+                    ESP_LOGE(TAG, "Time queue not created, moving to error state");
+                    vQueueDelete(time_queue);
+                    time_queue = NULL;
+                    sd_state = SD_STATE_ERROR;
+                }
+                recieveAttempts++;
+                vTaskDelay(pdMS_TO_TICKS(10));
+                break;
+            }
+        case SD_STATE_OPEN:
+
+            //Opening directory based on time
+            snprintf(dir, sizeof(dir), "%s/%04dy%02dm%02dd", MOUNT_POINT, timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
+
+            struct stat st;
+            if (stat(dir, &st) != 0) {
+                mkdir(dir, 0700);  // Create directory if doesn't exist
+            }
+
+            snprintf(filepath, sizeof(filepath), "%s/%02dx%02dx%02d.jpg", dir, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+
+            f = fopen(filepath, "wb");
+            if (f == NULL) {
+                ESP_LOGE(TAG, "Failed to open file for writing");
+                sd_state = SD_STATE_ERROR;
+                break;
+            }
+
+            sd_state = SD_STATE_SEND_FILE;
+            break;
+        case SD_STATE_SEND_FILE:
+            file_queue = xQueueCreate(10, sizeof(struct FILE*));
+            if (file_queue == NULL) {
+                ESP_LOGE(TAG, "Failed to create file queue");
+                sd_state = SD_STATE_ERROR;
+                break;
+            }
+            if (xQueueSend(file_queue, &f, 0) != pdPASS) {
+                ESP_LOGE(TAG, "Failed to send time to queue");
+            }
+            
+        
+        }
+    }
+
 }
 
 esp_err_t deinit_sdcard(void)
@@ -1116,6 +1238,8 @@ void app_main(void)
     char filename[200];
     char dir[200];
     char adc_read[200];
+    FILE *f = NULL;
+    int reciveAttempts = 0;
     camera_fb_t *fb = NULL;
 
     struct tm timeinfo;
@@ -1167,18 +1291,32 @@ void app_main(void)
                     break;
                 }
             }
-           
-            if ((ret = init_sd_card()) != ESP_OK)
-            {
-               ESP_LOGE(TAG, "SD card init failed");
-               state = SYSTEM_STATE_CLEANUP;
-               break;
+
+            xTaskCreatePinnedToCore(sd_hadler, "sd_hadler", 4096, NULL, 2, NULL, 1);
+            time_queue = xQueueCreate(10, sizeof(struct tm));
+            if (time_queue == NULL) {
+                ESP_LOGE(TAG, "Failed to create queue");
+            } else {
+                if (xQueueSend(time_queue, &timeinfo, 0) != pdPASS) {
+                    ESP_LOGE(TAG, "Failed to send time to queue");
+                }
             }
             
             state = SYSTEM_STATE_CAPTURE;
             break;
             
         case SYSTEM_STATE_CAPTURE:
+
+            if(sd_status == SD_STATE_ERROR) {
+                ESP_LOGE(TAG, "SD card error detected, moving to cleanup state");
+                state = SYSTEM_STATE_CLEANUP;
+                break;
+            }
+            else if(sd_status != SD_STATE_MOUNTED) {
+                vTaskDelay(pdMS_TO_TICKS(5));
+                break;
+            }
+
             t_pwr_up = esp_timer_get_time();
 
             gpio_set_level(CAM_PWR, 0);
@@ -1210,20 +1348,15 @@ void app_main(void)
             break;
 
         case SYSTEM_STATE_SAVE:
-            t_save = esp_timer_get_time();
-            struct tm timeinfo;
-            ret = read_time(&timeinfo);
-            if (ret != ESP_OK)
-            {
-                ESP_LOGE(TAG, "Failed to read time from RTC");
-                timeinfo.tm_year = 2012 - 1900;
-                timeinfo.tm_mon = 12;
-                timeinfo.tm_mday = 12;
-                timeinfo.tm_hour = 12;
-                timeinfo.tm_min = 12;
+            if(file_queue == NULL) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+                reciveAttempts++;
+                if(reciveAttempts > 100) {
+                    ESP_LOGE(TAG, "File queue not created, moving to cleanup state");
+                    state = SYSTEM_STATE_CLEANUP;
+                }
+                break;
             }
-            snprintf(dir, sizeof(dir), "%04dy%02dm%02dd", timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday);
-            snprintf(filename, sizeof(filename), "%02dx%02dx%02d.jpg", timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
 
             if(fb == NULL || fb->len == 0 || fb->buf == NULL)
             {
