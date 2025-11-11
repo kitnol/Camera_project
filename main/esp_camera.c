@@ -29,8 +29,6 @@
 #include "xclk.h"
 #include "esp_timer.h"
 
-#define LED_PIN 15
-
 #if CONFIG_OV2640_SUPPORT
 #include "ov2640.h"
 #endif
@@ -344,10 +342,6 @@ esp_err_t esp_camera_init(const camera_config_t *config)
         s_state->sensor.set_quality(&s_state->sensor, config->jpeg_quality);
     }
     s_state->sensor.init_status(&s_state->sensor);
-
-    gpio_set_level(LED_PIN, 0); // Turn off LED
-    vTaskDelay(pdMS_TO_TICKS(10));
-    gpio_set_level(LED_PIN, 1); // Turn off LED
 
     cam_start();
 

@@ -171,14 +171,14 @@ static camera_config_t camera_config = {
     .pin_href = CAM_PIN_HREF,
     .pin_pclk = CAM_PIN_PCLK,
 
-    .xclk_freq_hz = 20000000,
+    .xclk_freq_hz = 40000000,
     .ledc_timer = LEDC_TIMER_0,
     .ledc_channel = LEDC_CHANNEL_0,
 
     .pixel_format = PIXFORMAT_JPEG,
-    .frame_size = FRAMESIZE_QSXGA,     // Reduced from UXGA (800x600 instead of 1600x1200)
-    .jpeg_quality = 10,                // Lower quality to reduce memory usage
-    .fb_count = 4,                     // Single frame buffer without PSRAM
+    .frame_size = FRAMESIZE_QXGA,     // Reduced from UXGA (800x600 instead of 1600x1200)
+    .jpeg_quality = 5,                // Lower quality to reduce memory usage
+    .fb_count = 3,                     // Single frame buffer without PSRAM
     .fb_location = CAMERA_FB_IN_PSRAM, // Use DRAM instead of PSRAM
     .grab_mode = CAMERA_GRAB_LATEST,
 };
@@ -199,21 +199,43 @@ esp_err_t init_camera(void)
         return ESP_FAIL;
     }
 
+    int aec_value = s->get_reg(s, 0x3503, 0xFF); // Read current AEC value
+    int aec_value1 = s->get_reg(s, 0x3500, 0xFF); // Read current AEC value
+    int aec_value2 = s->get_reg(s, 0x3501, 0xFF); // Read current AEC value
+    int aec_value3 = s->get_reg(s, 0x3502, 0xFF); // Read current AEC value
+    int aec_ctrl05 = s->get_reg(s, 0x3A05, 0xFF); // Read current AEC value
+    int agc_gain1 = s->get_reg(s, 0x350A, 0xFF); // Read current AGC gain value
+    int agc_gain2 = s->get_reg(s, 0x350B, 0xFF); // Read current AGC gain value
+    int gainceiling1 = s->get_reg(s, 0x3A18, 0xFF); // Read current gain ceiling value
+    int gainceiling2 = s->get_reg(s, 0x3A19, 0xFF); // Read current gain ceiling value
+    int expo_man1 = s->get_reg(s, 0x350C, 0xFF); // Read current exposure manual value
+    int expo_man2 = s->get_reg(s, 0x350D, 0xFF); // Read current exposure manual value
+    ESP_LOGI(TAG, "Initial Exposure Manual Value: %d", expo_man1);
+    ESP_LOGI(TAG, "Initial Exposure Manual Value1: %d", expo_man2);
+    ESP_LOGI(TAG, "Initial AEC Value: %d", aec_value);
+    ESP_LOGI(TAG, "Initial AEC Value1: %d", aec_value1);
+    ESP_LOGI(TAG, "Initial AEC Value2: %d", aec_value2);
+    ESP_LOGI(TAG, "Initial AEC CTRL05 Value: %d", aec_ctrl05);
+    ESP_LOGI(TAG, "Initial AGC Gain1 Value: %d", agc_gain1);
+    ESP_LOGI(TAG, "Initial AGC Gain2 Value: %d", agc_gain2);
+    ESP_LOGI(TAG, "Initial Gain Ceiling1 Value: %d", gainceiling1);     
+    ESP_LOGI(TAG, "Initial Gain Ceiling2 Value: %d", gainceiling2);
+
     // Configure camera settings for better quality
-    s->set_brightness(s, 1);                 // -2 to 2
+    s->set_brightness(s, 0);                 // -2 to 2
     s->set_contrast(s, 0);                   // -2 to 2
     s->set_saturation(s, 0);                 // -2 to 2
     s->set_special_effect(s, 0);             // 0 to 6 (0 - No Effect, 1 - Negative, 2 - Grayscale, 3 - Red Tint, 4 - Green Tint, 5 - Blue Tint, 6 - Sepia)
     s->set_whitebal(s, 1);                   // 0 = disable , 1 = enable
     s->set_awb_gain(s, 1);                   // 0 = disable , 1 = enable
     s->set_wb_mode(s, 0);                    // 0 to 4 - if awb_gain enabled (0 - Auto, 1 - Sunny, 2 - Cloudy, 3 - Office, 4 - Home)
-    s->set_exposure_ctrl(s, 1);              // 0 = disable , 1 = enable
-    s->set_aec2(s, 1);                       // 0 = disable , 1 = enable
+    s->set_exposure_ctrl(s, 0);              // 0 = disable , 1 = enable
+    s->set_aec2(s, 0);                       // 0 = disable , 1 = enable
     s->set_ae_level(s, 0);                   // -2 to 2
-    s->set_aec_value(s, 20);                 // 0 to 1200
+    s->set_aec_value(s, 300);                 // 0 to 1200
     s->set_gain_ctrl(s, 1);                  // 0 = disable , 1 = enable
     s->set_agc_gain(s, 15);                  // 0 to 30
-    s->set_gainceiling(s, (gainceiling_t)4); // 0 to 6
+    s->set_gainceiling(s, (gainceiling_t)3); // 0 to 6
     s->set_bpc(s, 1);                        // 0 = disable , 1 = enable
     s->set_wpc(s, 1);                        // 0 = disable , 1 = enable
     s->set_raw_gma(s, 1);                    // 0 = disable , 1 = enable
@@ -222,6 +244,79 @@ esp_err_t init_camera(void)
     s->set_vflip(s, 0);                      // 0 = disable , 1 = enable
     s->set_dcw(s, 1);                        // 0 = disable , 1 = enable
     s->set_colorbar(s, 0);                   // 0 = disable , 1 = enable
+
+    //s->set_reg(s, 0x3A05, 0x3F, 0x20);  // Auto step mode with normal ratio
+
+    aec_value = s->get_reg(s, 0x3503, 0xFF); // Read current AEC value
+    aec_value1 = s->get_reg(s, 0x3500, 0xFF); // Read current AEC value
+    aec_value2 = s->get_reg(s, 0x3501, 0xFF); // Read current AEC value
+    aec_value3 = s->get_reg(s, 0x3502, 0xFF); // Read current AEC value
+    aec_ctrl05 = s->get_reg(s, 0x3A05, 0xFF); // Read current AEC value
+    agc_gain1 = s->get_reg(s, 0x350A, 0xFF); // Read current AGC gain value
+    agc_gain2 = s->get_reg(s, 0x350B, 0xFF); // Read current AGC gain value
+    gainceiling1 = s->get_reg(s, 0x3A18, 0xFF); // Read current gain ceiling value
+    gainceiling2 = s->get_reg(s, 0x3A19, 0xFF); // Read current gain ceiling value
+    ESP_LOGI(TAG, "set AEC Value: %d", aec_value);
+    ESP_LOGI(TAG, "set AEC Value1: %d", aec_value1);
+    ESP_LOGI(TAG, "set AEC Value2: %d", aec_value2);
+    ESP_LOGI(TAG, "set AEC Value3: %d", aec_value3);
+    ESP_LOGI(TAG, "Set AEC CTRL05 Value: %d", aec_ctrl05);
+    ESP_LOGI(TAG, "Set AEC Value: %d", aec_value);
+    ESP_LOGI(TAG, "Set AGC Gain1 Value: %d", agc_gain1);
+    ESP_LOGI(TAG, "Set AGC Gain2 Value: %d", agc_gain2);
+    ESP_LOGI(TAG, "Set Gain Ceiling1 Value: %d", gainceiling1);
+    ESP_LOGI(TAG, "Set Gain Ceiling2 Value: %d", gainceiling2);
+
+    // s->set_reg(s, 0x380C, 0x0F, 0x0B);   // HTS high byte (example: 2844 >> 8)
+    // s->set_reg(s, 0x380D, 0xFF, 0x1C);   // HTS low byte
+    // s->set_reg(s, 0x380E, 0xFF, 0x07);   // VTS high byte (example: 1968 >> 8)
+    // s->set_reg(s, 0x380F, 0xFF, 0xB0);   // VTS low byte
+    
+    // s->set_reg(s, 0x3A00, 0xFF, 0x78);  // Enable: band filter, night mode, less one line
+    // s->set_reg(s, 0x3A0F, 0xFF, 0x68);  // High limit entering stable (WPT)
+    // s->set_reg(s, 0x3A10, 0xFF, 0x58);  // Low limit entering stable (BPT)
+    // s->set_reg(s, 0x3A1B, 0xFF, 0x68);  // High limit leaving stable (WPT2)
+    // s->set_reg(s, 0x3A1E, 0xFF, 0x50);  // Low limit leaving stable (BPT2)
+
+    // // // Pre-gain control
+    s->set_reg(s, 0x3A13, 0x7F, 0x48);  // Pre-gain enabled (bit 6=1), value = 1x (0x40)
+
+    // s->set_reg(s, 0x3A05, 0x3F, 0x3F);  // Auto step mode with aggressive ratio
+    // s->set_reg(s, 0x3A06, 0x1F, 0x14);  // Fast increase step
+    // s->set_reg(s, 0x3A07, 0xFF, 0x28);  // Slow step (0x2) + fast decrease (0x8)
+    // s->set_reg(s, 0x3A11, 0xFF, 0xC0);  // Fast zone high limit
+    // s->set_reg(s, 0x3A1F, 0xFF, 0x20);  // Fast zone low limit
+    // s->set_reg(s, 0x3A00, 0xFF, 0x40);  // Enable LAEC (bit 6)
+
+    // // // Extended exposure range (for dark to bright transitions)
+    // // s->set_reg(s, 0x3A01, 0xFF, 0x01);  // Minimum exposure = 1 line
+    
+    // // Center-weighted metering (4x4 grid weights)
+    // s->set_reg(s, 0x5688, 0xFF, 0x22);  // Windows 00,01
+    // s->set_reg(s, 0x5689, 0xFF, 0x22);  // Windows 02,03
+    // s->set_reg(s, 0x568A, 0xFF, 0x22);  // Windows 10,11
+    // s->set_reg(s, 0x568B, 0xFF, 0x66);  // Windows 12,13 (center-higher)
+    // s->set_reg(s, 0x568C, 0xFF, 0x62);  // Windows 20,21 (center-higher)
+    // s->set_reg(s, 0x568D, 0xFF, 0x66);  // Windows 22,23 (center-higher)
+    // s->set_reg(s, 0x568E, 0xFF, 0x22);  // Windows 30,31
+    // s->set_reg(s, 0x568F, 0xFF, 0x22);  // Windows 32,33
+
+    // s->set_reg(s, 0x380C, 0x0F, 0x0B);   // HTS high byte (example: 2844 >> 8)
+    // s->set_reg(s, 0x380D, 0xFF, 0x1C);   // HTS low byte
+    // s->set_reg(s, 0x380E, 0xFF, 0x07);   // VTS high byte (example: 1968 >> 8)
+    // s->set_reg(s, 0x380F, 0xFF, 0xB0);   // VTS low byte
+
+
+    
+    // Set mimimum framerate to 20 fps
+    // s->set_reg(s, 0x380E, 0xFF, 0x01);  // Timing HTS high byte
+    // s->set_reg(s, 0x380F, 0xFF, 0x5F);  // Timing HTS low byte (0x07A0 = 1952)
+    // s->set_reg(s, 0x3810, 0xFF, 0x03);  // Timing VTS high byte
+
+    // // Enable manual AEC and AGC
+    // s->set_reg(s, 0x3503, 0xFF, 0x03);  // bit[0]=1 manual AEC, bit[1]=1 manual AGC
+    
+    
 
     sens = s;
     return ESP_OK;
@@ -1281,6 +1376,14 @@ void app_main(void)
                 login_state = LOGIN_NOT_ATEMPTED;
             }
 
+            if(gpio_get_level(USB_INT) == 1 && running_mode == 1) {
+                ESP_LOGI(TAG, "USB connected, but in motion detection mode, continuing...");
+            }
+            else {
+                running_mode = 0;
+                ESP_LOGI(TAG, "USB not connected, continuing...");
+            }
+
             ret = read_time(&timeinfo);
             if (ret != ESP_OK)
             {
@@ -1288,7 +1391,7 @@ void app_main(void)
             }
             else
             {
-                if (timeinfo.tm_hour >= 23 || timeinfo.tm_hour < 6) // Sleep between 10 PM and 6 AM
+                if (timeinfo.tm_hour >= 22 || timeinfo.tm_hour < 6) // Sleep between 10 PM and 6 AM
                 {
                     state = SYSTEM_STATE_NIGHT_SLEEP;
                     break;
@@ -1332,6 +1435,8 @@ void app_main(void)
             t_capture = esp_timer_get_time();
 
             fb = esp_camera_fb_get();
+            esp_camera_fb_return(fb);
+            fb = esp_camera_fb_get();
             if (!fb)
             {
                 ESP_LOGE(TAG, "Camera capture failed");
@@ -1348,6 +1453,17 @@ void app_main(void)
             break;
 
         case SYSTEM_STATE_SAVE:
+                    t_save = esp_timer_get_time();
+            // uint8_t *bmp_data;  // Will hold the BMP data
+            // size_t bmp_len;     // Will hold the BMP data length
+            // int64_t t_start_conv = esp_timer_get_time();
+            // if (frame2bmp(fb, &bmp_data, &bmp_len) == false) {
+            //     ESP_LOGW(TAG, "BMP conversion failed");
+            //     state = SYSTEM_STATE_CLEANUP;
+            //     break;
+            // }
+            // int64_t t_end_conv = esp_timer_get_time();
+            // ESP_LOGI(TAG, "Time taken to convert to BMP: %.lld ms", (t_end_conv - t_start_conv) / 1000);
             if(file_queue == NULL) {
                 vTaskDelay(pdMS_TO_TICKS(10));
                 reciveAttempts++;
@@ -1394,6 +1510,8 @@ void app_main(void)
             // Write in chunks
             size_t bytes_written = 0;
             size_t bytes_remaining = fb->len;
+            //size_t bytes_remaining = bmp_len;
+            
             
             while (bytes_remaining > 0) {
                 size_t chunk_size = (bytes_remaining > DMA_BUFFER_SIZE) ? DMA_BUFFER_SIZE : bytes_remaining;
@@ -1450,7 +1568,7 @@ void app_main(void)
             printf("Cleanup time: %lld ms\n", (long long)(t_end - t_cleanup) / 1000);
 
             // ESP_LOGI(TAG, "Day time detected, sleeping for 30 seconds"); 
-            esp_sleep_enable_timer_wakeup(30 * 1000 * 1000); // 5 minutes
+            esp_sleep_enable_timer_wakeup(5 * 1000 * 1000); // 5 minutes
             if(running_mode == 0)
             {
                 esp_sleep_enable_ext0_wakeup(21, 1);             // Wake up when GPIO 21 goes high
@@ -1576,7 +1694,7 @@ void app_main(void)
 
             break;
         case SYSTEM_STATE_FLASH_DRIVE:
-            vTaskDelay(pdMS_TO_TICKS(5000));
+
 
             if (!sd_card_mounted)
             {
