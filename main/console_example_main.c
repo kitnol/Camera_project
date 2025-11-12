@@ -203,6 +203,7 @@ esp_err_t init_camera(void)
     int aec_value1 = s->get_reg(s, 0x3500, 0xFF); // Read current AEC value
     int aec_value2 = s->get_reg(s, 0x3501, 0xFF); // Read current AEC value
     int aec_value3 = s->get_reg(s, 0x3502, 0xFF); // Read current AEC value
+    int aec_total = (aec_value1 << 12) | (aec_value2 << 4) | (aec_value3 >> 4);
     int aec_ctrl05 = s->get_reg(s, 0x3A05, 0xFF); // Read current AEC value
     int agc_gain1 = s->get_reg(s, 0x350A, 0xFF); // Read current AGC gain value
     int agc_gain2 = s->get_reg(s, 0x350B, 0xFF); // Read current AGC gain value
@@ -210,11 +211,17 @@ esp_err_t init_camera(void)
     int gainceiling2 = s->get_reg(s, 0x3A19, 0xFF); // Read current gain ceiling value
     int expo_man1 = s->get_reg(s, 0x350C, 0xFF); // Read current exposure manual value
     int expo_man2 = s->get_reg(s, 0x350D, 0xFF); // Read current exposure manual value
+    int vts_value1 = s->get_reg(s, 0x380E, 0xFF); // Read current VTC/VLA value
+    int vts_value2 = s->get_reg(s, 0x380F, 0xFF); // Read current VTC/VLA value
+    int vts_value = (vts_value1 << 8) | vts_value2;
+    ESP_LOGW(TAG, "Initial VTC/VLA Value: %d, 1: %d, 2: %d", vts_value, vts_value1, vts_value2);
     ESP_LOGI(TAG, "Initial Exposure Manual Value: %d", expo_man1);
     ESP_LOGI(TAG, "Initial Exposure Manual Value1: %d", expo_man2);
     ESP_LOGI(TAG, "Initial AEC Value: %d", aec_value);
     ESP_LOGI(TAG, "Initial AEC Value1: %d", aec_value1);
     ESP_LOGI(TAG, "Initial AEC Value2: %d", aec_value2);
+    ESP_LOGI(TAG, "Initial AEC Value3: %d", aec_value3);
+    ESP_LOGI(TAG, "Initial AEC Total Value: %d", aec_total);
     ESP_LOGI(TAG, "Initial AEC CTRL05 Value: %d", aec_ctrl05);
     ESP_LOGI(TAG, "Initial AGC Gain1 Value: %d", agc_gain1);
     ESP_LOGI(TAG, "Initial AGC Gain2 Value: %d", agc_gain2);
@@ -245,8 +252,15 @@ esp_err_t init_camera(void)
     s->set_dcw(s, 1);                        // 0 = disable , 1 = enable
     s->set_colorbar(s, 0);                   // 0 = disable , 1 = enable
 
-    //s->set_reg(s, 0x3A05, 0x3F, 0x20);  // Auto step mode with normal ratio
+    // VTS
+    s->set_reg(s, 0x350C, 0xFF, 1536);   // VTS high byte (example: 1968 >> 8)
+    s->set_reg(s, 0x350E, 0xFF, (1536 << 8));   // VTS low byte
 
+    //s->set_reg(s, 0x3A05, 0x3F, 0x20);  // Auto step mode with normal ratio
+    vts_value1 = s->get_reg(s, 0x380E, 0xFF); // Read current VTC/VLA value
+    vts_value2 = s->get_reg(s, 0x380F, 0xFF); // Read current VTC/VLA value
+    vts_value = (vts_value1 << 8) | vts_value2;
+    ESP_LOGW(TAG, "Set VTS Value: %d, 1: %d, 2: %d", vts_value, vts_value1, vts_value2);
     aec_value = s->get_reg(s, 0x3503, 0xFF); // Read current AEC value
     aec_value1 = s->get_reg(s, 0x3500, 0xFF); // Read current AEC value
     aec_value2 = s->get_reg(s, 0x3501, 0xFF); // Read current AEC value
@@ -256,12 +270,14 @@ esp_err_t init_camera(void)
     agc_gain2 = s->get_reg(s, 0x350B, 0xFF); // Read current AGC gain value
     gainceiling1 = s->get_reg(s, 0x3A18, 0xFF); // Read current gain ceiling value
     gainceiling2 = s->get_reg(s, 0x3A19, 0xFF); // Read current gain ceiling value
+    aec_total = (aec_value1 << 12) | (aec_value2 << 4) | (aec_value3 >> 4);
+    ESP_LOGI(TAG, "Initial AEC Total Value: %d", aec_total);
     ESP_LOGI(TAG, "set AEC Value: %d", aec_value);
     ESP_LOGI(TAG, "set AEC Value1: %d", aec_value1);
     ESP_LOGI(TAG, "set AEC Value2: %d", aec_value2);
     ESP_LOGI(TAG, "set AEC Value3: %d", aec_value3);
     ESP_LOGI(TAG, "Set AEC CTRL05 Value: %d", aec_ctrl05);
-    ESP_LOGI(TAG, "Set AEC Value: %d", aec_value);
+    ESP_LOGI(TAG, "Set AEC Value: %d", aec_total);
     ESP_LOGI(TAG, "Set AGC Gain1 Value: %d", agc_gain1);
     ESP_LOGI(TAG, "Set AGC Gain2 Value: %d", agc_gain2);
     ESP_LOGI(TAG, "Set Gain Ceiling1 Value: %d", gainceiling1);
