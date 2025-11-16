@@ -130,7 +130,32 @@ class Ui_MainWindow(object):
     
     def on_line_received(self, line):
         """Handle received line (runs in GUI thread)"""
-        self.textBrowser.append(f"[LINE] {line}")
+        self.textBrowser.append(f" {line}")
+    
+    def send_login_command(self):
+        """Send login command with password to ESP32"""
+        if self.monitor is None:
+            self.textBrowser.append("Error: Not connected to ESP32")
+            return
+        
+        password = self.lineEdit.text()
+        
+        if not password:
+            self.textBrowser.append("Error: Password field is empty")
+            return
+        
+        command = f"login {password}\n"
+        
+        try:
+            # Write to serial
+            self.monitor.serial_write(command.encode('utf-8'))
+            self.textBrowser.append(f"Sent: {command.strip()}")
+            
+            # Optional: Clear the password field after sending
+            # self.lineEdit.clear()
+            
+        except Exception as e:
+            self.textBrowser.append(f"Error sending command: {e}")
     
     def closeEvent(self, event):
         """Clean up when window closes"""
@@ -144,33 +169,46 @@ class Ui_MainWindow(object):
         MainWindow.resize(847, 573)
         self.centralwidget = QtWidgets.QWidget(MainWindow)
         self.centralwidget.setObjectName("centralwidget")
-        self.pushButton = QtWidgets.QPushButton(self.centralwidget)
+        
+        # Login button - connect to send_login_command
+        self.pushButton = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.send_login_command())
         self.pushButton.setGeometry(QtCore.QRect(190, 50, 91, 31))
         self.pushButton.setObjectName("pushButton")
+        
         self.textBrowser = QtWidgets.QTextEdit(self.centralwidget)
         self.textBrowser.setGeometry(QtCore.QRect(0, 400, 841, 121))
         self.textBrowser.setObjectName("textBrowser")
+        
+        # Password input - press Enter to send
         self.lineEdit = QtWidgets.QLineEdit(self.centralwidget)
         self.lineEdit.setGeometry(QtCore.QRect(70, 60, 113, 22))
         self.lineEdit.setObjectName("lineEdit")
+        self.lineEdit.returnPressed.connect(self.send_login_command)  # Enter key sends command
+        
         self.label = QtWidgets.QLabel(self.centralwidget)
         self.label.setGeometry(QtCore.QRect(10, 60, 71, 21))
         self.label.setObjectName("label")
+        
         self.pushButton_2 = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.connect_to_esp32())
         self.pushButton_2.setGeometry(QtCore.QRect(10, 10, 171, 31))
         self.pushButton_2.setObjectName("pushButton_2")
+        
         self.label_2 = QtWidgets.QLabel(self.centralwidget)
         self.label_2.setGeometry(QtCore.QRect(190, 20, 91, 16))
         self.label_2.setObjectName("label_2")
+        
         self.pushButton_3 = QtWidgets.QPushButton(self.centralwidget)
         self.pushButton_3.setGeometry(QtCore.QRect(10, 100, 91, 28))
         self.pushButton_3.setObjectName("pushButton_3")
+        
         self.pushButton_4 = QtWidgets.QPushButton(self.centralwidget)
         self.pushButton_4.setGeometry(QtCore.QRect(110, 100, 93, 28))
         self.pushButton_4.setObjectName("pushButton_4")
+        
         self.pushButton_5 = QtWidgets.QPushButton(self.centralwidget)
         self.pushButton_5.setGeometry(QtCore.QRect(10, 140, 191, 28))
         self.pushButton_5.setObjectName("pushButton_5")
+        
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(MainWindow)
         self.menubar.setGeometry(QtCore.QRect(0, 0, 847, 26))
