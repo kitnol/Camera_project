@@ -31,6 +31,15 @@ menu "Example Configuration"
         bool
         default y
 
+    config CAMERA_PSRAM_DMA
+        bool "Enable PSRAM DMA mode by default"
+        depends on IDF_TARGET_ESP32S2 || IDF_TARGET_ESP32S3
+        default n
+        help
+            Enable DMA transfers directly from PSRAM on supported targets
+            (ESP32-S2 and ESP32-S3) by default.
+
+
     choice EXAMPLE_CAM_HRES
         bool "Set camera horizontal resolution"
         default EXAMPLE_CAM_HRES_1024 if EXAMPLE_MIPI_DSI_DISP_HRES_1024

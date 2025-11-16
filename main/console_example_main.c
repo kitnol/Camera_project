@@ -815,7 +815,7 @@ static int off_command_handler(int argc, char **argv)
     }
 
     onoff_mode = 1;
-    printf("Initialising flash drive");
+    printf("Turning off device");
     printf("\n");
 
     return 0;
@@ -849,7 +849,7 @@ static int on_command_handler(int argc, char **argv)
     }
 
     onoff_mode = 0;
-    printf("Initialising flash drive");
+    printf("Turning on device");
     printf("\n");
 
     return 0;
@@ -1351,6 +1351,13 @@ void app_main(void)
                 login_state = LOGIN_NOT_ATEMPTED;
             }
 
+            if(onoff_mode == 1)
+            {
+                ESP_LOGI(TAG, "Device is turned off");
+                state = SYSTEM_STATE_OFF;
+                break;
+            }
+
             ret = read_time(&timeinfo);
             if (ret != ESP_OK)
             {
@@ -1601,6 +1608,7 @@ void app_main(void)
             register_mode_command();
             register_bat_command();
             register_off_command();
+            register_on_command();
 
             ESP_LOGI(TAG, "Starting ESP32-S3 Camera with SD Card");
             ESP_LOGI(TAG, "Custom commands registered: 'login', 'sd', 'init_rtc', 'settime', 'gettime', 'on', 'off'");
@@ -1672,7 +1680,6 @@ void app_main(void)
 
             break;
         case SYSTEM_STATE_FLASH_DRIVE:
-            vTaskDelay(pdMS_TO_TICKS(5000));
 
             if (!sd_card_mounted)
             {
