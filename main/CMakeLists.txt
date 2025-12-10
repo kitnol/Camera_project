@@ -1,4 +1,4 @@
-idf_component_register(SRCS "esp_camera.c" "i2cdev.c" "ds3231.c" "console_example_main.c" "to_bmp.c" "jpge.cpp" "esp_jpg_decode.c"
+idf_component_register(SRCS "esp_camera.c" "i2cdev.c" "ds3231.c" "console_example_main.c"
                        INCLUDE_DIRS "." "../components/isp_dvp/include" "../components/esp32-camera/driver/private_include" "../components/esp32-camera/sensors/private_include"
                        REQUIRES esp_mm esp_driver_isp esp_driver_cam esp_driver_i2c sensor_init fatfs sdmmc vfs esp_adc
                        PRIV_REQUIRES esp32-camera esp_timer
