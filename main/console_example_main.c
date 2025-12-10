@@ -130,7 +130,8 @@ typedef enum
     SYSTEM_STATE_DAY_SLEEP,
     SYSTEM_STATE_NIGHT_SLEEP,
     SYSTEM_STATE_USB_CONNECTED,
-    SYSTEM_STATE_FLASH_DRIVE
+    SYSTEM_STATE_FLASH_DRIVE,
+    SYSTEM_STATE_OFF
 } system_state_t;
 
 typedef enum
@@ -146,6 +147,7 @@ sensor_t *sens;
 camera_fb_t *fbsave;
 
 RTC_DATA_ATTR int running_mode = 0; // 0 = normal, 1 = motion detection
+RTC_DATA_ATTR int onoff_mode = 0; // 0 = on, 1 = off
 login_state_t login_state = LOGIN_NOT_ATEMPTED;
 #define CORRECT_PASSWORD "hello"
 
@@ -908,6 +910,74 @@ static void register_login_command(void)
     ESP_ERROR_CHECK(esp_console_cmd_register(&login_cmd));
 }
 
+/* Turining camera off */
+static int off_command_handler(int argc, char **argv)
+{
+    if (argc < 1)
+    {
+        printf("Usage: off\n");
+        return 1;
+    }
+
+    if (login_state != LOGIN_SUCCESSFUL)
+    {
+        printf("You are not logged in\n");
+        return 1;
+    }
+
+    onoff_mode = 1;
+    printf("Turning off device");
+    printf("\n");
+
+    return 0;
+}
+
+static void register_off_command(void)
+{
+    const esp_console_cmd_t off_cmd = {
+        .command = "off",
+        .help = "Turning off device",
+        .hint = NULL,
+        .func = &off_command_handler,
+        .argtable = NULL};
+
+    ESP_ERROR_CHECK(esp_console_cmd_register(&off_cmd));
+}
+
+/* Turining camera on */
+static int on_command_handler(int argc, char **argv)
+{
+    if (argc < 1)
+    {
+        printf("Usage: off\n");
+        return 1;
+    }
+
+    if (login_state != LOGIN_SUCCESSFUL)
+    {
+        printf("You are not logged in\n");
+        return 1;
+    }
+
+    onoff_mode = 0;
+    printf("Turning on device");
+    printf("\n");
+
+    return 0;
+}
+
+static void register_on_command(void)
+{
+    const esp_console_cmd_t on_cmd = {
+        .command = "on",
+        .help = "Turning on device",
+        .hint = NULL,
+        .func = &on_command_handler,
+        .argtable = NULL};
+
+    ESP_ERROR_CHECK(esp_console_cmd_register(&on_cmd));
+}
+
 /* Turining camera into sd card */
 static int sd_command_handler(int argc, char **argv)
 {
@@ -1392,12 +1462,11 @@ void app_main(void)
                 login_state = LOGIN_NOT_ATEMPTED;
             }
 
-            if(gpio_get_level(USB_INT) == 1 && running_mode == 1) {
-                ESP_LOGI(TAG, "USB connected, but in motion detection mode, continuing...");
-            }
-            else {
-                running_mode = 0;
-                ESP_LOGI(TAG, "USB not connected, continuing...");
+            if(onoff_mode == 1)
+            {
+                ESP_LOGI(TAG, "Device is turned off");
+                state = SYSTEM_STATE_OFF;
+                break;
             }
 
             ret = read_time(&timeinfo);
@@ -1636,6 +1705,17 @@ void app_main(void)
             esp_deep_sleep_start();
             break;
 
+        case SYSTEM_STATE_OFF:
+            gpio_set_level(CAM_PWR, 1);
+            gpio_hold_en(CAM_PWR);
+            gpio_deep_sleep_hold_en();
+            vTaskDelay(pdMS_TO_TICKS(10));
+
+            ESP_LOGI(TAG, "Turning off the device");
+            esp_sleep_enable_ext0_wakeup(21, 1);             // Wake up when GPIO 21 goes high
+            esp_deep_sleep_start();
+            break;
+
         case SYSTEM_STATE_USB_CONNECTED:
             esp_console_repl_t *repl = NULL;
             esp_console_repl_config_t repl_config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
@@ -1653,9 +1733,11 @@ void app_main(void)
             register_get_time_command();
             register_mode_command();
             register_bat_command();
+            register_off_command();
+            register_on_command();
 
             ESP_LOGI(TAG, "Starting ESP32-S3 Camera with SD Card");
-            ESP_LOGI(TAG, "Custom commands registered: 'login', 'sdcon'");
+            ESP_LOGI(TAG, "Custom commands registered: 'login', 'sd', 'init_rtc', 'settime', 'gettime', 'on', 'off'");
 
             esp_console_dev_usb_serial_jtag_config_t hw_config = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
             ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&hw_config, &repl_config, &repl));
@@ -1690,7 +1772,10 @@ void app_main(void)
             else
             {
                 ESP_LOGE(TAG, "Login time out, closing comunication, to attempt login again unplug USB from camera, wait a minute and plug again");
-                login_state = LOGIN_TIME_OUT;
+                if(login_attempts >= 30)
+                {
+                    login_state = LOGIN_TIME_OUT;
+                }
                 login_attempts = 0;
                 esp_console_deinit();
             }
@@ -1707,10 +1792,20 @@ void app_main(void)
                 break;
             }
 
+            if(onoff_mode == 1)
+            {
+                ESP_LOGI(TAG, "Camera turning off command received");
+                state = SYSTEM_STATE_OFF;
+                break;
+            }
+            else{
+                ESP_LOGI(TAG, "Camera turning on command received");
+                state = SYSTEM_STATE_INIT;
+            }
+
 
             break;
         case SYSTEM_STATE_FLASH_DRIVE:
-
 
             if (!sd_card_mounted)
             {
