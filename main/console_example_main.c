@@ -773,7 +773,7 @@ static int login_command_handler(int argc, char **argv)
 
     if (strcmp(pass, password) == 0)
     {
-        printf("Login succesful!\n");
+        printf("Login succesful! (test)\n");
         login_state = LOGIN_SUCCESSFUL;
     }
     else
@@ -1341,6 +1341,7 @@ void app_main(void)
             gpio_set_direction(CAM_PWR, GPIO_MODE_OUTPUT);
             gpio_set_level(CAM_PWR, 1);
 
+            ESP_LOGI(TAG, "System initialized after flashing");
 
             if (gpio_get_level(USB_INT) == 1 && login_state != LOGIN_TIME_OUT && running_mode == 0)
             {

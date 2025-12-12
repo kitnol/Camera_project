@@ -2,7 +2,84 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 import serial.tools.list_ports
 import serial
 import queue
+from tkinter import filedialog as fd
+import subprocess
+import os
 
+import esptool
+from esptool.cmds import detect_chip
+
+PORT = "COM13"  # Change to your port
+FLASH_ADDRESS = 0x10000
+folder_path = ""
+
+def progress_callback(percent):
+    print(f"Wrote: {int(percent)}%")
+
+def flash_esp_firmware(port, bin_file, flash_address=0x0, progress_callback=None):
+    """
+    Flash firmware to an ESP microcontroller.
+    
+    Args:
+        port: Serial port where ESP is connected (e.g., 'COM3' or '/dev/ttyUSB0')
+        bin_file: Path to the binary firmware file
+        flash_address: Starting address in flash memory (default: 0x0)
+        progress_callback: Optional callback function for progress updates (receives percentage 0-100)
+    
+    Returns:
+        dict: Information about the flashing operation including chip description and success status
+    """
+    try:
+        with detect_chip(port) as esp:
+            # Detect chip and get info
+            description = esp.get_chip_description()
+            features = esp.get_chip_features()
+            print(f"Detected ESP on port {port}: {description}")
+            print("Features:", ", ".join(features))
+
+            # Load stub for faster flashing
+            esp = esp.run_stub()
+            
+            with open(bin_file, 'rb') as binary:
+                # Load the binary
+                binary_data = binary.read()
+                total_size = len(binary_data)
+                print(f"Binary size: {total_size} bytes")
+
+                # Write binary blocks
+                esp.flash_begin(total_size, flash_address)
+                for i in range(0, total_size, esp.FLASH_WRITE_SIZE):
+                    block = binary_data[i:i + esp.FLASH_WRITE_SIZE]
+                    # Pad the last block
+                    block = block + bytes([0xFF]) * (esp.FLASH_WRITE_SIZE - len(block))
+                    esp.flash_block(block, i + flash_address)
+                    
+                    # Call progress callback if provided
+                    if progress_callback:
+                        progress_callback(i / total_size * 100)
+                
+                esp.flash_finish()
+
+                # Reset the chip out of bootloader mode
+                esp.hard_reset()
+                
+                # Final progress update
+                if progress_callback:
+                    progress_callback(100)
+                
+                return {
+                    'success': True,
+                    'chip': description,
+                    'features': features,
+                    'size': total_size
+                }
+    
+    except Exception as e:
+        print(f"Error flashing firmware: {e}")
+        return {
+            'success': False,
+            'error': str(e)
+        }
 
 class SerialReaderThread(QtCore.QThread):
     """Thread to read serial data without blocking GUI"""
@@ -45,6 +122,8 @@ class SerialReaderThread(QtCore.QThread):
 
 
 class Ui_MainWindow(object):
+    file_path = ""
+    port = ""
     def __init__(self):
         self.serial_port = None
         self.reader_thread = None
@@ -230,6 +309,56 @@ class Ui_MainWindow(object):
         except Exception as e:
             self.textBrowser.append(f"Error sending command: {e}")
     
+    def select_file(self):
+        """Open file dialog to select a file"""
+        file_path = fd.askopenfilename()
+        if file_path:
+            self.textBrowser.append(f"Selected file: {file_path}")
+        else:
+            self.textBrowser.append("File selection canceled")
+
+    def select_file(self):
+        """Open folder dialog to select a folder"""
+        _translate = QtCore.QCoreApplication.translate
+        self.file_path = fd.askopenfilename()
+        if self.file_path:
+            self.textBrowser.append(f"Selected file: {self.file_path}")
+            self.label_4.setText(_translate("MainWindow", f"Selected file: {self.file_path}"))
+        else:
+            self.textBrowser.append("File selection canceled")
+
+    def update_firmware(self):
+        ports = serial.tools.list_ports.comports()
+        if not ports:
+            self.textBrowser.append("Error: device not connected")
+            return
+        self.textBrowser.append(f"Updating firmware... {self.file_path}")
+        """Update firmware on ESP32 using esptool"""
+        if self.file_path == "":
+            self.textBrowser.append("Error: No folder selected")
+            return
+
+        self.textBrowser.append("Starting firmware update...")
+
+        for port_info in ports:
+            port_name = port_info.device
+            self.textBrowser.append(f"Using port: {port_name}")
+            check = flash_esp_firmware(
+                port=port_name,
+                bin_file=self.file_path,
+                flash_address=FLASH_ADDRESS,
+                progress_callback=lambda percent: self.textBrowser.append(f"Flashing progress: {int(percent)}%")
+            )
+            if check['success']:
+                self.textBrowser.append(f"✓ Firmware flashed successfully to {check['chip']}")
+                return
+        
+        
+        else:
+            self.textBrowser.append(f"✗ Firmware flashing failed: {check.get('error', 'Unknown error')}")
+
+        self.textBrowser.append(f"Firmware update completed. {check}")
+
     def closeEvent(self, event):
         """Clean up when window closes"""
         self.disconnect_from_esp32()
@@ -241,12 +370,15 @@ class Ui_MainWindow(object):
         self.centralwidget = QtWidgets.QWidget(MainWindow)
         self.centralwidget.setObjectName("centralwidget")
         
+        # COMUNICATION SECTION
+
         # Login button - connect to send_login_command
         self.pushButton = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.send_login_command())
         self.pushButton.setGeometry(QtCore.QRect(190, 50, 91, 31))
         self.pushButton.setObjectName("pushButton")
-        self.pushButton.setEnabled(False)  # Disabled until connected
+        self.pushButton.setEnabled(False)  # Disabled until connected  
         
+        # Console output area
         self.textBrowser = QtWidgets.QTextEdit(self.centralwidget)
         self.textBrowser.setGeometry(QtCore.QRect(0, 400, 841, 121))
         self.textBrowser.setObjectName("textBrowser")
@@ -258,6 +390,7 @@ class Ui_MainWindow(object):
         self.lineEdit.setEchoMode(QtWidgets.QLineEdit.Password)  # Hide password
         self.lineEdit.returnPressed.connect(self.send_login_command)
         
+        # Password label
         self.label = QtWidgets.QLabel(self.centralwidget)
         self.label.setGeometry(QtCore.QRect(10, 60, 71, 21))
         self.label.setObjectName("label")
@@ -267,14 +400,17 @@ class Ui_MainWindow(object):
         self.pushButton_2.setGeometry(QtCore.QRect(10, 10, 171, 31))
         self.pushButton_2.setObjectName("pushButton_2")
         
+        # Status label (Connected/Disconnected)
         self.label_2 = QtWidgets.QLabel(self.centralwidget)
         self.label_2.setGeometry(QtCore.QRect(190, 20, 91, 16))
         self.label_2.setObjectName("label_2")
         
+        # On button - tied to pushButton_3
         self.pushButton_3 = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.send_on_command())
         self.pushButton_3.setGeometry(QtCore.QRect(10, 100, 91, 28))
         self.pushButton_3.setObjectName("pushButton_3")
         
+        # Off button - tied to pushButton_4
         self.pushButton_4 = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.send_off_command())
         self.pushButton_4.setGeometry(QtCore.QRect(110, 100, 93, 28))
         self.pushButton_4.setObjectName("pushButton_4")
@@ -288,6 +424,28 @@ class Ui_MainWindow(object):
         self.pushButton_6 = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.disconnect_from_esp32())
         self.pushButton_6.setGeometry(QtCore.QRect(10, 180, 191, 28))
         self.pushButton_6.setObjectName("pushButton_6")
+
+        #UPDATE SECTION
+
+        # Update label
+        self.label_3 = QtWidgets.QLabel(self.centralwidget)
+        self.label_3.setGeometry(QtCore.QRect(400, 20, 91, 16))
+        self.label_3.setObjectName("label_3") 
+
+        # Choose File label
+        self.label_4 = QtWidgets.QLabel(self.centralwidget)
+        self.label_4.setGeometry(QtCore.QRect(400, 45, 450, 16))
+        self.label_4.setObjectName("label_3") 
+
+        # Update button - tied to pushButton_7
+        self.pushButton_7 = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.update_firmware())
+        self.pushButton_7.setGeometry(QtCore.QRect(400, 110, 191, 28))
+        self.pushButton_7.setObjectName("pushButton_8")
+
+        # Select File button - tied to pushButton_8
+        self.pushButton_8 = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.select_file())
+        self.pushButton_8.setGeometry(QtCore.QRect(400, 70, 191, 28))
+        self.pushButton_8.setObjectName("pushButton_8")
         
         MainWindow.setCentralWidget(self.centralwidget)
         self.menubar = QtWidgets.QMenuBar(MainWindow)
@@ -310,16 +468,20 @@ class Ui_MainWindow(object):
         self.pushButton.setText(_translate("MainWindow", "Login"))
         self.label.setText(_translate("MainWindow", "Password:"))
         self.pushButton_2.setText(_translate("MainWindow", "Connect"))
-        self.label_2.setText(_translate("MainWindow", "Disconnected"))
+        self.label_2.setText(_translate("MainWindow", "Disconnected")) 
         self.pushButton_3.setText(_translate("MainWindow", "On"))
         self.pushButton_4.setText(_translate("MainWindow", "Off"))
         self.pushButton_5.setText(_translate("MainWindow", "SD card"))
         self.pushButton_6.setText(_translate("MainWindow", "Disconnect"))
-
+        self.pushButton_7.setText(_translate("MainWindow", "Update"))
+        self.pushButton_8.setText(_translate("MainWindow", "Select File"))
+        self.label_3.setText(_translate("MainWindow", "Update Section"))
+        self.label_4.setText(_translate("MainWindow", "Select file:"))
 
 
 if __name__ == "__main__":
     import sys
+
     app = QtWidgets.QApplication(sys.argv)
     MainWindow = QtWidgets.QMainWindow()
     ui = Ui_MainWindow()
