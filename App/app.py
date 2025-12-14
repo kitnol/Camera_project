@@ -3,11 +3,68 @@ import serial.tools.list_ports
 import serial
 import queue
 from tkinter import filedialog as fd
+from tkinter.messagebox import askyesno, askquestion
 import subprocess
 import os
 
 import esptool
 from esptool.cmds import detect_chip
+
+
+class DateTimeSelectionDialog(QtWidgets.QDialog):
+    """Custom dialog for selecting date and time"""
+    
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Set Custom Date and Time")
+        self.setGeometry(100, 100, 400, 300)
+        
+        layout = QtWidgets.QVBoxLayout()
+        
+        # Date selection
+        date_layout = QtWidgets.QHBoxLayout()
+        date_layout.addWidget(QtWidgets.QLabel("Date:"))
+        self.date_edit = QtWidgets.QDateEdit()
+        self.date_edit.setDate(QtCore.QDate.currentDate())
+        self.date_edit.setCalendarPopup(True)
+        date_layout.addWidget(self.date_edit)
+        layout.addLayout(date_layout)
+        
+        # Time selection
+        time_layout = QtWidgets.QHBoxLayout()
+        time_layout.addWidget(QtWidgets.QLabel("Time:"))
+        self.time_edit = QtWidgets.QTimeEdit()
+        self.time_edit.setTime(QtCore.QTime.currentTime())
+        self.time_edit.setDisplayFormat("HH:mm")
+        time_layout.addWidget(self.time_edit)
+        layout.addLayout(time_layout)
+        
+        # Buttons
+        button_layout = QtWidgets.QHBoxLayout()
+        
+        ok_button = QtWidgets.QPushButton("OK")
+        ok_button.clicked.connect(self.accept)
+        button_layout.addWidget(ok_button)
+        
+        cancel_button = QtWidgets.QPushButton("Cancel")
+        cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(cancel_button)
+        
+        layout.addLayout(button_layout)
+        
+        self.setLayout(layout)
+    
+    def get_selected_datetime(self):
+        """Return selected date and time"""
+        date = self.date_edit.date()
+        time = self.time_edit.time()
+        return {
+            'year': date.year(),
+            'month': date.month(),
+            'day': date.day(),
+            'hour': time.hour(),
+            'minute': time.minute()
+        }
 
 PORT = "COM13"  # Change to your port
 FLASH_ADDRESS = 0x10000
@@ -124,6 +181,7 @@ class SerialReaderThread(QtCore.QThread):
 class Ui_MainWindow(object):
     file_path = ""
     port = ""
+    isRTCinitialized = False
     def __init__(self):
         self.serial_port = None
         self.reader_thread = None
@@ -201,13 +259,14 @@ class Ui_MainWindow(object):
             
             # Clean up
             self.serial_port = None
+            self.isRTCinitialized = False
             
             self.textBrowser.append("✓ Disconnected successfully")
             self.label_2.setText("Disconnected")
             
             # Update button states
             self.pushButton_2.setEnabled(True)   # Enable Connect button
-            self.pushButton_5.setEnabled(False)  # Disable Disconnect button
+            self.pushButton_5.setEnabled(False)  # Disable Disconnect button    
             self.pushButton.setEnabled(False)    # Disable Login button
             
         except Exception as e:
@@ -253,7 +312,7 @@ class Ui_MainWindow(object):
             self.textBrowser.append(f"Error sending command: {e}")
     
     def send_on_command(self):
-        """Send login command with password to ESP32"""
+        """Send on command to ESP32"""
         if self.serial_port is None or not self.serial_port.is_open:
             self.textBrowser.append("Error: Not connected to ESP32")
             return
@@ -270,6 +329,100 @@ class Ui_MainWindow(object):
             
         except Exception as e:
             self.textBrowser.append(f"Error sending command: {e}")
+
+    def send_gettime_command(self):
+        """Send gettime command to ESP32"""
+        if self.serial_port is None or not self.serial_port.is_open:
+            self.textBrowser.append("Error: Not connected to ESP32")
+            return
+        
+        if not self.isRTCinitialized:
+            command = f"init_rtc\n"
+            try:
+                # Write to serial
+                self.serial_port.write(command.encode('utf-8'))
+                self.textBrowser.append(f">>> Sent: {command.strip()}")
+                
+            except Exception as e:
+                self.textBrowser.append(f"Error sending command: {e}")
+                return
+            self.isRTCinitialized = True
+
+        command = f"gettime\n"
+        
+        try:
+            # Write to serial
+            self.serial_port.write(command.encode('utf-8'))
+            self.textBrowser.append(f">>> Sent: {command.strip()}")
+            
+            # Optional: Clear the password field after sending
+            # self.lineEdit.clear()
+            
+        except Exception as e:
+            self.textBrowser.append(f"Error sending command: {e}")
+
+    def send_settime_command(self):
+        """Send settime command to ESP32 with user-selected time"""
+        current_time = QtCore.QDateTime.currentDateTime()
+        formatted_time = current_time.toString("yyyy-MM-dd HH:mm:ss")
+        year = current_time.date().year()
+        month = current_time.date().month()
+        day = current_time.date().day()
+        hour = current_time.time().hour()
+        minute = current_time.time().minute()
+        print(formatted_time)
+        print(year, month, day, hour, minute)
+        answer = askyesno(title='Confirmation',
+                          message='Do you want to set the time to ' + formatted_time + '?')
+        
+        if answer:
+            # User confirmed - use current time
+            time_data = {
+                'year': year,
+                'month': month,
+                'day': day,
+                'hour': hour,
+                'minute': minute
+            }
+        else:
+            # User declined - open custom selection dialog
+            dialog = DateTimeSelectionDialog()
+            if dialog.exec_() == QtWidgets.QDialog.Accepted:
+                time_data = dialog.get_selected_datetime()
+            else:
+                self.textBrowser.append("Time setting canceled")
+                return
+        
+        # Send the time to ESP32
+        if self.serial_port is None or not self.serial_port.is_open:
+            self.textBrowser.append("Error: Not connected to ESP32")
+            return
+        
+        if not self.isRTCinitialized:
+            command = f"init_rtc\n"
+            try:
+                # Write to serial
+                self.serial_port.write(command.encode('utf-8'))
+                self.textBrowser.append(f">>> Sent: {command.strip()}")
+                
+            except Exception as e:
+                self.textBrowser.append(f"Error sending command: {e}")
+                return
+            self.isRTCinitialized = True
+
+        command = f"settime {time_data['year']} {time_data['month']} {time_data['day']} {time_data['hour']} {time_data['minute']}\n"
+        
+        try:
+            # Write to serial
+            self.serial_port.write(command.encode('utf-8'))
+            self.textBrowser.append(f">>> Sent: {command.strip()}")
+            
+        except Exception as e:
+            self.textBrowser.append(f"Error sending command: {e}")
+
+        formatted_selected_time = f"{time_data['year']:04d}-{time_data['month']:02d}-{time_data['day']:02d} {time_data['hour']:02d}:{time_data['minute']:02d}"
+        self.textBrowser.append(f"Setting time to: {formatted_selected_time}")
+        
 
     def send_off_command(self):
         """Send login command with password to ESP32"""
@@ -415,14 +568,25 @@ class Ui_MainWindow(object):
         self.pushButton_4.setGeometry(QtCore.QRect(110, 100, 93, 28))
         self.pushButton_4.setObjectName("pushButton_4")
         
-        # Disconnect button - tied to pushButton_5
+        # SD card button - tied to pushButton_5
         self.pushButton_5 = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.send_sd_command())
         self.pushButton_5.setGeometry(QtCore.QRect(10, 140, 191, 28))
         self.pushButton_5.setObjectName("pushButton_5")
         self.pushButton_5.setEnabled(False)  # Disabled by default until connected
 
+        # Get Time button - tied to checktime
+        self.checktime = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.send_gettime_command())
+        self.checktime.setGeometry(QtCore.QRect(10, 180, 191, 28))
+        self.checktime.setObjectName("checktime")
+
+        # Set Time button - tied to settime
+        self.settime = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.send_settime_command())
+        self.settime.setGeometry(QtCore.QRect(10, 220, 191, 28))
+        self.settime.setObjectName("settime")
+
+        # Disconnect button - tied to pushButton_6
         self.pushButton_6 = QtWidgets.QPushButton(self.centralwidget, clicked=lambda: self.disconnect_from_esp32())
-        self.pushButton_6.setGeometry(QtCore.QRect(10, 180, 191, 28))
+        self.pushButton_6.setGeometry(QtCore.QRect(10, 260, 191, 28))
         self.pushButton_6.setObjectName("pushButton_6")
 
         #UPDATE SECTION
@@ -477,6 +641,8 @@ class Ui_MainWindow(object):
         self.pushButton_8.setText(_translate("MainWindow", "Select File"))
         self.label_3.setText(_translate("MainWindow", "Update Section"))
         self.label_4.setText(_translate("MainWindow", "Select file:"))
+        self.checktime.setText(_translate("MainWindow", "Get Time"))
+        self.settime.setText(_translate("MainWindow", "Set Time"))
 
 
 if __name__ == "__main__":
