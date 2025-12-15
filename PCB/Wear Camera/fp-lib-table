@@ -1,0 +1,5 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "ARC_Components_Lib")(type "KiCad")(uri "D:/ARC/GroundStation/PCB/ARC_Components_Lib.pretty")(options "")(descr ""))
+  (lib (name "WearCam_Components_Lib")(type "KiCad")(uri "D:/ESP_Projects/CamPr1/PCB/FootPrints")(options "")(descr ""))
+)

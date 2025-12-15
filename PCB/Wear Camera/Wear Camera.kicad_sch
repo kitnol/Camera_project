@@ -1,0 +1,122 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "fb372521-2b29-434a-bb70-33c291621260")
+	(paper "A4")
+	(lib_symbols)
+	(text "Power"
+		(exclude_from_sim no)
+		(at 100.584 35.56 0)
+		(effects
+			(font
+				(size 3.81 3.81)
+				(thickness 0.762)
+				(bold yes)
+			)
+		)
+		(uuid "760f62f7-7df8-43f4-960b-bc9cf13501ad")
+	)
+	(text "MCU"
+		(exclude_from_sim no)
+		(at 42.926 36.068 0)
+		(effects
+			(font
+				(size 3.81 3.81)
+				(thickness 0.762)
+				(bold yes)
+			)
+		)
+		(uuid "a2193f51-f717-4325-9bc7-fb0e59d17e84")
+	)
+	(sheet
+		(at 19.05 21.59)
+		(size 49.53 29.21)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "06128d97-5d39-49a0-8252-b0558ee5cb54")
+		(property "Sheetname" "MCU"
+			(at 19.05 20.8784 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "mcu.kicad_sch"
+			(at 19.05 51.3846 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "Wear Camera"
+				(path "/fb372521-2b29-434a-bb70-33c291621260"
+					(page "2")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 76.2 21.59)
+		(size 49.53 29.21)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "d3604591-d902-440d-a704-204bd90ced23")
+		(property "Sheetname" "Power"
+			(at 76.2 20.8784 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "power.kicad_sch"
+			(at 76.2 51.3846 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(instances
+			(project "Wear Camera"
+				(path "/fb372521-2b29-434a-bb70-33c291621260"
+					(page "3")
+				)
+			)
+		)
+	)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)
